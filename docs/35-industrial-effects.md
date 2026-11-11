@@ -1,6 +1,6 @@
 # 35 — Live buffers, modal resonators and frequency shifting
 
-Three native fy effects extend Slab's audio manipulation palette. They
+Five native fy effects and one instrument extend Slab's audio manipulation palette. They
 use the normal insert/send routing, presets and automation; no new project
 format or plugin host is involved. Source changes take effect in newly
 loaded instances, as with the existing machines.
@@ -10,11 +10,15 @@ loaded instances, as with the existing machines.
 | `buffer2` | Buffer Loom | Live stereo capture, granular scatter, reverse grains, repeat/stutter |
 | `resonator2` | Modal Bank | Eight tuned, damped modes per channel, excited by incoming audio |
 | `shift2` | Sideband | Signed frequency shifting in Hz, ring modulation, shifted feedback |
+| `zitherfx` | Magnet Zither FX | Ten tuned strings driven by the input and by two spinning magnet discs |
+| `zither` | Magnet Zither | The same strings as an instrument: plucked from the keys, droning under the discs |
+| `echo2` | Tape Echo | A tape loop past four heads: multi-head echo, swell, sound on sound, freeze |
 
 Exact parameter IDs, ranges, switch indices and preset descriptions are
 generated in [20-machine-reference.md](20-machine-reference.md). A preset
-stores switch **indices**, while slabkit accepts labels. All three process
-true stereo in one pass; left/right audio history remains independent.
+stores switch **indices**, while slabkit accepts labels. All process true
+stereo in one pass; the first three and the echo keep left/right audio history
+independent, and the zither's strings are shared and panned.
 
 ## Buffer Loom
 
@@ -68,6 +72,95 @@ Start with `steel-scrambler` for chopped industrial hits,
 `pneumatic-repeat` for clocked stutter, or `capture-cloud` and then FREEZE
 for a sustained texture. `reverse-grains` and `half-speed-loop` explore
 different reading directions/rates.
+
+## Magnet Zither
+
+Ten steel strings in a tuning, eight modes each, heard through a pickup
+and panned low to high across the stereo field. Where the Modal Bank is
+one body at one pitch, this is a chord of strings: as an insert, the
+strings that agree with the input answer it and the rest stay quiet.
+
+**TUNING** picks the ten notes (OPEN D, MINOR, PENTA, 5THS, LYDIAN,
+CLUSTER, and HARM: partials 2–11 of D1, just). **ROOT** transposes in
+semitones. **RING** is the T60 of a 110 Hz string's fundamental; higher
+strings and higher modes decay faster. **TONE** moves the pickup toward
+the bridge and opens its lowpass. **COIL** is how hard the input (summed
+to mono) drives all ten strings.
+
+Each **DISC** is a spinning disc of magnets held over the strings. Its
+pull is a train of narrow bumps at **SPIN** passes a second, so its
+harmonics fall at multiples of SPIN: where one lands on a string's mode,
+that string blooms, and sweeping SPIN walks the bloom through the tuning.
+Set SPIN to a note's frequency (36.71 Hz is D1) to bring out the strings
+related to it. Every pass pulls a little differently and the motor
+wanders, so strings under the disc stay faintly alive between blooms.
+**HEIGHT** is the distance (the pull falls with its square), **ACROSS**
+which strings the disc sits over (0 low, 1 high), **ALONG** where on
+their length (near 0 is at the bridge and reaches the upper modes).
+
+A string that is ringing hard takes less from whatever drives it, so the
+level follows roughly the cube root of the drive and nothing runs away at
+resonance. With a disc ON the machine sounds from silence, so the host
+never idles it. Automate SPIN, HEIGHT and ACROSS to play it. It costs
+about 190 ns per sample.
+
+There are two machines over the one kernel. **Magnet Zither FX**
+(`zitherfx`) is the insert described above, with COIL and MIX. **Magnet
+Zither** (`zither`) is an instrument, so a drone needs nothing in front
+of it: the discs sound on an empty track before any note, and the keys
+pluck the strings. A note plucks the string nearest its pitch, so every
+key lands in the tuning; velocity is how hard. **PLUCK** moves the
+plectrum from the bridge (bright, every mode) toward the middle (round),
+and **DAMP** lays a finger on the string when the key is let go; with it
+off the strings ring out at RING. Ten keys can pluck at once. The
+strings live in the machine's shared region and the voices only pluck
+(docs/04 §Shared state); `-1.0 tail!` keeps the shared word running with
+no note held.
+
+The idea of magnet discs over a zither comes from the "Stitches Desk"
+web instrument; the DSP here is written for Slab.
+
+## Tape Echo
+
+`echo2` is a loop of tape past one record head and four playback heads,
+after the drum and tape echoes of the 1960s and 70s. The loop is
+**LENGTH** long at **SPEED** 1 (or **DIV** beats with **SYNC** on), and
+the heads sit a quarter, a half, three quarters and the whole way round
+it. **1–4** switch which heads are heard; **SPREAD** places them left,
+right, half left and center.
+
+**MODE** says what is recorded again. In ECHO it is head 4: the whole
+loop comes round **REPEAT** quieter each pass, and the other heads are
+taps inside it. In SWELL it is every head that is on, shared between
+them, so the repeats fall between each other and smear into a wash, the
+drum echo's stand-in for a reverb. A long LENGTH with REPEAT near 1 is
+sound on sound: play over what is there while it slowly fades (use it
+fully wet on a send). REPEAT goes past 1, where the loop howls, held by
+the tape curve.
+
+Everything recorded passes the tape: a coupling cap, **TONE**'s
+12 dB/octave rolloff (it follows SPEED) and the tape curve (**DRIVE**),
+so each repeat is duller and rounder than the last. The motor has mass:
+LENGTH and SPEED reach the loop through a quarter-second lag, and the
+sound on the tape bends in pitch until it settles. **WOW** and
+**FLUTTER** move every head together, and since repeats are re-recorded
+the wobble compounds. **HISS** is on the playback and, half as loud, on
+what is recorded. **POPS** are specks on the tape, a few a second at
+most, and the splice, which ticks once every pass. **WEAR** makes the
+wow wander, adds dropouts and dulls each pass. Hiss and pops follow the
+level in the machine and shut in silence, so an idle track still goes
+quiet and the host can skip it.
+
+**FREEZE** lifts the record and erase heads: the loop plays as it is,
+the input does not reach it, and nothing is lost per pass. The heads
+still read through the wow, and above WEAR 0 the tape sheds a little
+every pass, so a held loop can be left to erode. Automate SPEED on a
+frozen loop for half-speed and double-speed passes.
+
+Start with `drum-echo`; `four-head-swell` is the wash, `sound-on-sound`
+the long loop, `worn-loop` a tired transport, `howl` the feedback
+instrument. It costs about 140 ns per sample with all heads on, and the
+loop is 8.2 s of memory per channel.
 
 ## Modal Bank
 

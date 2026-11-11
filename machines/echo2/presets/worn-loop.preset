@@ -1,0 +1,27 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "echo2",
+  "note": "A tired transport: deep wow, dropouts, pops, each pass duller",
+  "params": {
+    "echo-length": 1.2,
+    "echo-speed": 1,
+    "echo-sync": 0,
+    "echo-h1": 0,
+    "echo-h2": 1,
+    "echo-h3": 0,
+    "echo-h4": 1,
+    "echo-mode": 0,
+    "echo-spread": 0.5,
+    "echo-repeat": 0.8,
+    "echo-tone": 2600,
+    "echo-drive": 0.5,
+    "echo-freeze": 0,
+    "echo-wow": 0.75,
+    "echo-flutter": 0.6,
+    "echo-hiss": 0.6,
+    "echo-pops": 0.7,
+    "echo-wear": 0.7,
+    "echo-mix": 0.45
+  }
+}

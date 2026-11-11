@@ -504,6 +504,9 @@ zeroes them, passes the pointer, and orders the calls.
   note-on and runs while a voice sounds; once none does, it sleeps after
   a block whose own output stayed under `IDLE_FLOOR`, until the next
   note-on. Its output counts as the machine's for idle skipping.
+- A machine that declares `-1.0 tail!` runs its shared word from the
+  first block and never lets it sleep: something that sounds with no
+  note held, such as the Magnet Zither's discs (docs/35).
 
 The fixture `machines/raw_fixtures/shared_body.fy` and the test "shared
 state: voices and the shared word alternate per step" show the order.

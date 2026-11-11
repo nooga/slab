@@ -1,0 +1,16 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "zither",
+  "note": "One disc passing at D1 over the low strings; sounds by itself on an empty track; pluck over it from the keys",
+  "params": {
+    "zi-tuning": 0,
+    "zi-ring": 16,
+    "zi-tone": 0.4,
+    "zi-a-on": 1,
+    "zi-a-spin": 36.71,
+    "zi-a-height": 0.25,
+    "zi-a-across": 0.25,
+    "zi-a-along": 0.3
+  }
+}

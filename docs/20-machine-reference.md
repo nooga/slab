@@ -9,6 +9,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | id | name | kind | voices | prefix |
 |---|---|---|---|---|
 | [`acid`](#acid) | Squelch 33 | instrument | mono | `—` |
+| [`ambika`](#ambika) | Ambika | instrument | 6 | `am-` |
 | [`bass`](#bass) | Fretwire | instrument | 4 | `bs-` |
 | [`concoction`](#concoction) | Concoction | instrument | 8 | `cn-` |
 | [`cream`](#cream) | Mog Passenger | instrument | mono | `cr-` |
@@ -26,6 +27,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`rhodes`](#rhodes) | Rhodes E-Piano | instrument | 8 | `rd-` |
 | [`sampler`](#sampler) | Sampler | instrument | 8 | `smp-` |
 | [`unfairlight`](#unfairlight) | Unfairlight TMI | instrument | 8 | `cmi-` |
+| [`zither`](#zither) | Magnet Zither | instrument | 10 | `zi-` |
 | [`amp2`](#amp2) | Ampstack | effect | — | `amp-` |
 | [`buffer2`](#buffer2) | Buffer Loom | effect | — | `buf-` |
 | [`bus2`](#bus2) | Bus | effect | — | `bus-` |
@@ -34,6 +36,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`comp2`](#comp2) | Comp | effect | — | `comp-` |
 | [`convo`](#convo) | CONVO | effect | — | `convo-` |
 | [`delay2`](#delay2) | Delay | effect | — | `delay-` |
+| [`echo2`](#echo2) | Tape Echo | effect | — | `echo-` |
 | [`eq2`](#eq2) | EQ | effect | — | `eq-` |
 | [`era`](#era) | Era | effect | — | `era-` |
 | [`fold2`](#fold2) | Folder | effect | — | `fold-` |
@@ -52,6 +55,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`tape2`](#tape2) | Tape | effect | — | `tape-` |
 | [`verb2`](#verb2) | Verb | effect | — | `verb-` |
 | [`wob2`](#wob2) | Wobble | effect | — | `wob-` |
+| [`zitherfx`](#zitherfx) | Magnet Zither FX | effect | — | `zi-` |
 
 ## acid
 
@@ -77,6 +81,493 @@ Presets:
 - `round-line` — Low RES and little sweep: a round bassline under a mix
 - `square-bounce` — Square, short decay, moderate RES: a hollow rubbery line
 - `wet-scream` — WET mode driven, RES near the top: screaming accents
+
+## ambika
+
+**Ambika**, instrument, 6 voices.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `am-o1-shape` | OSC 1 | WAVE | 0 NONE / 1 SAW / 2 SQUARE / 3 TRIANG / 4 SINE / 5 ZSAW / 6 LPZSAW / 7 PKZSAW / 8 BPZSAW / 9 HPZSAW / 10 LPZPLS / 11 PKZPLS / 12 BPZPLS / 13 HPZPLS / 14 ZTRI / 15 PAD / 16 FM / 17 8BITS / 18 PWM / 19 NOISE / 20 VOWEL / 21 MALE / 22 FEMALE / 23 CHOIR / 24 TAMPURA / 25 BOWED / 26 CELLO / 27 VIBES / 28 SLAP / 29 EPIANO / 30 ORGAN / 31 WAVES / 32 DIGITAL / 33 DRONE1 / 34 DRONE2 / 35 METALLIC / 36 BELL / 37 WAVQNCE | 1 | switch |
+| `am-o1-prm` | OSC 1 | PARA | 0 … 127 | 0 | integer |
+| `am-o1-range` | OSC 1 | RANG | -36 … 36 | 0 | integer |
+| `am-o1-tune` | OSC 1 | TUNE | -64 … 63 | 0 | integer |
+| `am-o2-shape` | OSC 2 | WAVE | 0 NONE / 1 SAW / 2 SQUARE / 3 TRIANG / 4 SINE / 5 ZSAW / 6 LPZSAW / 7 PKZSAW / 8 BPZSAW / 9 HPZSAW / 10 LPZPLS / 11 PKZPLS / 12 BPZPLS / 13 HPZPLS / 14 ZTRI / 15 PAD / 16 FM / 17 8BITS / 18 PWM / 19 NOISE / 20 VOWEL / 21 MALE / 22 FEMALE / 23 CHOIR / 24 TAMPURA / 25 BOWED / 26 CELLO / 27 VIBES / 28 SLAP / 29 EPIANO / 30 ORGAN / 31 WAVES / 32 DIGITAL / 33 DRONE1 / 34 DRONE2 / 35 METALLIC / 36 BELL / 37 WAVQNCE | 1 | switch |
+| `am-o2-prm` | OSC 2 | PARA | 0 … 127 | 0 | integer |
+| `am-o2-range` | OSC 2 | RANG | -36 … 36 | 0 | integer |
+| `am-o2-tune` | OSC 2 | TUNE | -64 … 63 | 6 | integer |
+| `am-balance` | MIXER | MIX | 0 … 63 | 32 | integer |
+| `am-op` | MIXER | XMOD | 0 SUM / 1 SYNC / 2 RING / 3 XOR / 4 FOLD / 5 BITS | 0 | switch |
+| `am-mixprm` | MIXER | AMNT | 0 … 63 | 0 | integer |
+| `am-sub-shape` | MIXER | TYPE | 0 SQ1 / 1 TR1 / 2 PL1 / 3 SQ2 / 4 TR2 / 5 PL2 / 6 CLICK / 7 GLITCH / 8 BLOW / 9 METAL / 10 POP | 0 | switch |
+| `am-sub-lvl` | MIXER | SUB | 0 … 63 | 0 | integer |
+| `am-noise` | MIXER | NOIS | 0 … 63 | 0 | integer |
+| `am-fuzz` | MIXER | FUZZ | 0 … 63 | 0 | integer |
+| `am-crush` | MIXER | CRSH | 0 … 63 | 0 | integer |
+| `am-cutoff` | FILTER | FREQ | 0 … 127 | 90 | integer |
+| `am-reso` | FILTER | RESO | 0 … 63 | 10 | integer |
+| `am-fmode` | FILTER | MODE | 0 LP / 1 BP / 2 HP / 3 NOTCH | 0 | switch |
+| `am-board` | FILTER | BOARD | 0 SMR4 / 1 SVF | 0 | switch |
+| `am-env2` | FILTER | ENV2 | -63 … 63 | 30 | integer |
+| `am-lfo2` | FILTER | LFO2 | -63 … 63 | 0 | integer |
+| `am-e1-a` | ENV 1 | ATTK | 0 … 127 | 0 | integer |
+| `am-e1-d` | ENV 1 | DECA | 0 … 127 | 40 | integer |
+| `am-e1-s` | ENV 1 | SUST | 0 … 127 | 20 | integer |
+| `am-e1-r` | ENV 1 | RELE | 0 … 127 | 60 | integer |
+| `am-e2-a` | ENV 2 | ATTK | 0 … 127 | 0 | integer |
+| `am-e2-d` | ENV 2 | DECA | 0 … 127 | 40 | integer |
+| `am-e2-s` | ENV 2 | SUST | 0 … 127 | 20 | integer |
+| `am-e2-r` | ENV 2 | RELE | 0 … 127 | 60 | integer |
+| `am-e3-a` | ENV 3 | ATTK | 0 … 127 | 0 | integer |
+| `am-e3-d` | ENV 3 | DECA | 0 … 127 | 50 | integer |
+| `am-e3-s` | ENV 3 | SUST | 0 … 127 | 100 | integer |
+| `am-e3-r` | ENV 3 | RELE | 0 … 127 | 60 | integer |
+| `am-l1-shape` | LFO 1 | WAVE | 0 TRI / 1 SQR / 2 S&H / 3 RAMP / 4 WAV1 / 5 WAV2 / 6 WAV3 / 7 WAV4 / 8 WAV5 / 9 WAV6 / 10 WAV7 / 11 WAV8 / 12 WAV9 / 13 WAV10 / 14 WAV11 / 15 WAV12 / 16 WAV13 / 17 WAV14 / 18 WAV15 / 19 WAV16 | 0 | switch |
+| `am-l1-rate` | LFO 1 | RATE | 0 … 127 | 40 | integer |
+| `am-l1-trig` | LFO 1 | TRIG | 0 FREE / 1 RETRIG | 0 | switch |
+| `am-l2-shape` | LFO 2 | WAVE | 0 TRI / 1 SQR / 2 S&H / 3 RAMP / 4 WAV1 / 5 WAV2 / 6 WAV3 / 7 WAV4 / 8 WAV5 / 9 WAV6 / 10 WAV7 / 11 WAV8 / 12 WAV9 / 13 WAV10 / 14 WAV11 / 15 WAV12 / 16 WAV13 / 17 WAV14 / 18 WAV15 / 19 WAV16 | 0 | switch |
+| `am-l2-rate` | LFO 2 | RATE | 0 … 127 | 40 | integer |
+| `am-l2-trig` | LFO 2 | TRIG | 0 FREE / 1 RETRIG | 0 | switch |
+| `am-l3-shape` | LFO 3 | WAVE | 0 TRI / 1 SQR / 2 S&H / 3 RAMP / 4 WAV1 / 5 WAV2 / 6 WAV3 / 7 WAV4 / 8 WAV5 / 9 WAV6 / 10 WAV7 / 11 WAV8 / 12 WAV9 / 13 WAV10 / 14 WAV11 / 15 WAV12 / 16 WAV13 / 17 WAV14 / 18 WAV15 / 19 WAV16 | 0 | switch |
+| `am-l3-rate` | LFO 3 | RATE | 0 … 127 | 40 | integer |
+| `am-l3-trig` | LFO 3 | TRIG | 0 FREE / 1 RETRIG | 0 | switch |
+| `am-vl-shape` | LFO 4 | WAVE | 0 TRI / 1 SQR / 2 S&H / 3 RAMP / 4 WAV1 / 5 WAV2 / 6 WAV3 / 7 WAV4 / 8 WAV5 / 9 WAV6 / 10 WAV7 / 11 WAV8 / 12 WAV9 / 13 WAV10 / 14 WAV11 / 15 WAV12 / 16 WAV13 / 17 WAV14 / 18 WAV15 / 19 WAV16 | 0 | switch |
+| `am-vl-rate` | LFO 4 | RATE | 0 … 127 | 40 | integer |
+| `am-volume` | PART | VOLU | 0 … 127 | 100 | integer |
+| `am-legato` | PART | LEGA | 0 OFF / 1 ON | 0 | switch |
+| `am-porta` | PART | PORT | 0 … 127 | 0 | integer |
+| `am-octave` | PART | OCTV | -2 … 2 | 0 | integer |
+| `am-tune` | PART | TUNE | -100 … 100 | 0 | integer |
+| `am-bend` | PERFORM | BEND | -1 … 1 | 0 | linear |
+| `am-mwhl` | PERFORM | MWHL | 0 … 1 | 0 | linear |
+| `am-whl2` | PERFORM | WHL2 | 0 … 1 | 0 | linear |
+| `am-pdal` | PERFORM | PDAL | 0 … 1 | 0 | linear |
+| `am-gain` | OUT | LEVEL | 0 … 1 | 0.5 | pow |
+| `am-m1-src` | SLOT 1 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 0 | switch |
+| `am-m1-dst` | SLOT 1 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 0 | switch |
+| `am-m1-amt` | SLOT 1 | AMT | -63 … 63 | 0 | linear |
+| `am-m2-src` | SLOT 2 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 0 | switch |
+| `am-m2-dst` | SLOT 2 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 1 | switch |
+| `am-m2-amt` | SLOT 2 | AMT | -63 … 63 | 0 | linear |
+| `am-m3-src` | SLOT 3 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 3 | switch |
+| `am-m3-dst` | SLOT 3 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 4 | switch |
+| `am-m3-amt` | SLOT 3 | AMT | -63 … 63 | 0 | linear |
+| `am-m4-src` | SLOT 4 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 4 | switch |
+| `am-m4-dst` | SLOT 4 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 0 | switch |
+| `am-m4-amt` | SLOT 4 | AMT | -63 … 63 | 0 | linear |
+| `am-m5-src` | SLOT 5 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 4 | switch |
+| `am-m5-dst` | SLOT 5 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 1 | switch |
+| `am-m5-amt` | SLOT 5 | AMT | -63 … 63 | 0 | linear |
+| `am-m6-src` | SLOT 6 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 5 | switch |
+| `am-m6-dst` | SLOT 6 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 6 | switch |
+| `am-m6-amt` | SLOT 6 | AMT | -63 … 63 | 0 | linear |
+| `am-m7-src` | SLOT 7 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 6 | switch |
+| `am-m7-dst` | SLOT 7 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 12 | switch |
+| `am-m7-amt` | SLOT 7 | AMT | -63 … 63 | 0 | linear |
+| `am-m8-src` | SLOT 8 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 11 | switch |
+| `am-m8-dst` | SLOT 8 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 12 | switch |
+| `am-m8-amt` | SLOT 8 | AMT | -63 … 63 | 0 | linear |
+| `am-m9-src` | SLOT 9 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 17 | switch |
+| `am-m9-dst` | SLOT 9 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 12 | switch |
+| `am-m9-amt` | SLOT 9 | AMT | -63 … 63 | 0 | linear |
+| `am-m10-src` | SLOT 10 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 0 | switch |
+| `am-m10-dst` | SLOT 10 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 12 | switch |
+| `am-m10-amt` | SLOT 10 | AMT | -63 … 63 | 0 | linear |
+| `am-m11-src` | SLOT 11 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 2 | switch |
+| `am-m11-dst` | SLOT 11 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 18 | switch |
+| `am-m11-amt` | SLOT 11 | AMT | -63 … 63 | 63 | linear |
+| `am-m12-src` | SLOT 12 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 11 | switch |
+| `am-m12-dst` | SLOT 12 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 18 | switch |
+| `am-m12-amt` | SLOT 12 | AMT | -63 … 63 | 16 | linear |
+| `am-m13-src` | SLOT 13 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 13 | switch |
+| `am-m13-dst` | SLOT 13 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 4 | switch |
+| `am-m13-amt` | SLOT 13 | AMT | -63 … 63 | 32 | linear |
+| `am-m14-src` | SLOT 14 | SRC | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 6 | switch |
+| `am-m14-dst` | SLOT 14 | DEST | 0 PRM1 / 1 PRM2 / 2 OSC1 / 3 OSC2 / 4 ~1+2 / 5 VIBR / 6 MIX / 7 XMOD / 8 NOIS / 9 SUB / 10 FUZZ / 11 CRSH / 12 FREQ / 13 RESO / 14 ATTK / 15 DECA / 16 RELE / 17 LFO4 / 18 VCA | 5 | switch |
+| `am-m14-amt` | SLOT 14 | AMT | -63 … 63 | 0 | linear |
+| `am-d1-in1` | MOD 1 | IN1 | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 0 | switch |
+| `am-d1-in2` | MOD 1 | IN2 | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 0 | switch |
+| `am-d1-op` | MOD 1 | OPER | 0 OFF / 1 ADD / 2 PRD / 3 ATTN / 4 MAX / 5 MIN / 6 XOR / 7 >= / 8 <= / 9 QTZ / 10 LAG | 0 | switch |
+| `am-d2-in1` | MOD 2 | IN1 | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 0 | switch |
+| `am-d2-in2` | MOD 2 | IN2 | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 0 | switch |
+| `am-d2-op` | MOD 2 | OPER | 0 OFF / 1 ADD / 2 PRD / 3 ATTN / 4 MAX / 5 MIN / 6 XOR / 7 >= / 8 <= / 9 QTZ / 10 LAG | 0 | switch |
+| `am-d3-in1` | MOD 3 | IN1 | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 0 | switch |
+| `am-d3-in2` | MOD 3 | IN2 | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 0 | switch |
+| `am-d3-op` | MOD 3 | OPER | 0 OFF / 1 ADD / 2 PRD / 3 ATTN / 4 MAX / 5 MIN / 6 XOR / 7 >= / 8 <= / 9 QTZ / 10 LAG | 0 | switch |
+| `am-d4-in1` | MOD 4 | IN1 | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 0 | switch |
+| `am-d4-in2` | MOD 4 | IN2 | 0 ENV1 / 1 ENV2 / 2 ENV3 / 3 LFO1 / 4 LFO2 / 5 LFO3 / 6 LFO4 / 7 MOD1 / 8 MOD2 / 9 MOD3 / 10 MOD4 / 11 VELO / 12 AFTR / 13 BEND / 14 MWHL / 15 WHL2 / 16 PDAL / 17 NOTE / 18 GATE / 19 NOIS / 20 RAND / 21 [256] / 22 [128] / 23 [64] / 24 [32] / 25 [16] / 26 [8] / 27 [4] | 0 | switch |
+| `am-d4-op` | MOD 4 | OPER | 0 OFF / 1 ADD / 2 PRD / 3 ATTN / 4 MAX / 5 MIN / 6 XOR / 7 >= / 8 <= / 9 QTZ / 10 LAG | 0 | switch |
+
+Presets:
+
+- `01-init-saw` — INIT SAW: Two saws a hair apart through the 4-pole: the unit's blank patch.
+- `02-pad-wash` — PAD WASH: The quad-saw pad over a saw, a slow ENV 3, the filter breathing with LFO 2.
+- `03-choir` — CHOIR: A choir wavetable scanned by a slow LFO, a soft attack: chords sound sung.
+- `04-glass-keys` — GLASS KEYS: Vibes wavetable swept by a decaying ENV 1: a struck, bell-like chord.
+- `05-zsaw-lead` — ZSAW LEAD: A resonant phase-distortion saw swept by ENV 1, glided in legato.
+- `06-vowel-pad` — VOWEL PAD: The vowel oscillator morphing under a saw, held chords that talk.
+- `07-sync-bass` — SYNC BASS: OSC 2 hard-synced to OSC 1 and swept by ENV 1; a square sub underneath.
+- `08-fold-bell` — FOLD BELL: Two-operator FM with a fold: metallic and clangorous, short ring.
+- `09-click-pluck` — CLICK PLUCK: A narrow pulse with a click transient: a dry pluck for stabs.
+- `10-crushed-organ` — CRUSHED ORGAN: The organ wavetable run through the crusher and a little fuzz.
+- `A/000-junon` — Junon (Ambika golden card, bank A 000).
+- `A/001-moof` — Moof? (Ambika golden card, bank A 001).
+- `A/002-moonrise` — Moonrise (Ambika golden card, bank A 002).
+- `A/003-basic` — Basic (Ambika golden card, bank A 003).
+- `A/004-virgin` — Virgin (Ambika golden card, bank A 004).
+- `A/005-flo-bass` — Flo bass (Ambika golden card, bank A 005).
+- `A/006-medular` — Medular (Ambika golden card, bank A 006).
+- `A/007-bitbass` — Bitbass (Ambika golden card, bank A 007).
+- `A/008-shorty` — Shorty (Ambika golden card, bank A 008).
+- `A/009-vicdbass` — VICdBass (Ambika golden card, bank A 009).
+- `A/010-sawwy` — Sawwy (Ambika golden card, bank A 010).
+- `A/011-korgasm` — Korgasm (Ambika golden card, bank A 011).
+- `A/012-teebee` — Teebee (Ambika golden card, bank A 012).
+- `A/013-reason` — Reason (Ambika golden card, bank A 013).
+- `A/014-pulsar` — Pulsar (Ambika golden card, bank A 014).
+- `A/015-puddle` — Puddle (Ambika golden card, bank A 015).
+- `A/016-liquid` — Liquid (Ambika golden card, bank A 016).
+- `A/017-flateric` — Flateric (Ambika golden card, bank A 017).
+- `A/018-wobble-bass` — Wobble bass (Ambika golden card, bank A 018).
+- `A/019-blop-bass` — Blop bass (Ambika golden card, bank A 019).
+- `A/020-digi-bass` — Digi bass (Ambika golden card, bank A 020).
+- `A/021-digo-bass` — Digo bass (Ambika golden card, bank A 021).
+- `A/022-cavemen` — Cavemen (Ambika golden card, bank A 022).
+- `A/023-digattak` — Digattak (Ambika golden card, bank A 023).
+- `A/024-borg` — Borg (Ambika golden card, bank A 024).
+- `A/025-judith` — Judith (Ambika golden card, bank A 025).
+- `A/026-fatbass` — Fatbass (Ambika golden card, bank A 026).
+- `A/027-chipie` — Chipie (Ambika golden card, bank A 027).
+- `A/028-bacon` — Bacon (Ambika golden card, bank A 028).
+- `A/029-esq-0-75` — Esq-0.75 (Ambika golden card, bank A 029).
+- `A/030-wowwy` — Wowwy (Ambika golden card, bank A 030).
+- `A/031-sexy-boy` — Sexy boy (Ambika golden card, bank A 031).
+- `A/032-groowox` — Groowox (Ambika golden card, bank A 032).
+- `A/033-beastie` — Beastie (Ambika golden card, bank A 033).
+- `A/034-slap` — Slap (Ambika golden card, bank A 034).
+- `A/035-pk-bass` — Pk bass (Ambika golden card, bank A 035).
+- `A/036-tremolo` — Tremolo (Ambika golden card, bank A 036).
+- `A/037-pythagore` — Pythagore (Ambika golden card, bank A 037).
+- `A/038-hammrhnd` — Hammrhnd (Ambika golden card, bank A 038).
+- `A/039-e-piano` — E-piano (Ambika golden card, bank A 039).
+- `A/040-tinytine` — Tinytine (Ambika golden card, bank A 040).
+- `A/041-fmfmfmfm` — FmFmFmFm (Ambika golden card, bank A 041).
+- `A/042-fullbell` — Fullbell (Ambika golden card, bank A 042).
+- `A/043-electrob` — ElectroB (Ambika golden card, bank A 043).
+- `A/044-ringing` — Ringing (Ambika golden card, bank A 044).
+- `A/045-belpiano` — Belpiano (Ambika golden card, bank A 045).
+- `A/046-fm-glass` — Fm glass (Ambika golden card, bank A 046). LFO 1 was tempo-synced.
+- `A/047-persephone` — Persephone (Ambika golden card, bank A 047).
+- `A/048-collegue` — Collegue (Ambika golden card, bank A 048).
+- `A/049-noleleva` — Noleleva (Ambika golden card, bank A 049).
+- `A/050-tuyaux` — Tuyaux (Ambika golden card, bank A 050).
+- `A/051-ahh-paris` — Ahh Paris (Ambika golden card, bank A 051).
+- `A/052-follow` — Follow ! (Ambika golden card, bank A 052).
+- `A/053-pwm-sweep` — Pwm sweep (Ambika golden card, bank A 053).
+- `A/054-slow-sweep` — Slow sweep (Ambika golden card, bank A 054).
+- `A/055-fat-sweeep` — Fat sweeep (Ambika golden card, bank A 055).
+- `A/056-stringe` — Stringe (Ambika golden card, bank A 056).
+- `A/057-big-string` — Big string (Ambika golden card, bank A 057).
+- `A/058-pwm-string` — Pwm string (Ambika golden card, bank A 058).
+- `A/059-strings` — Strings (Ambika golden card, bank A 059).
+- `A/060-planar` — Planar (Ambika golden card, bank A 060).
+- `A/061-sleepy` — Sleepy (Ambika golden card, bank A 061).
+- `A/062-klaa-tuu` — Klaa'tuu (Ambika golden card, bank A 062).
+- `A/063-unity` — Unity (Ambika golden card, bank A 063). LFO 2 was tempo-synced.
+- `A/064-repliknt` — Repliknt (Ambika golden card, bank A 064).
+- `A/065-bows` — Bows (Ambika golden card, bank A 065).
+- `A/066-blaise` — Blaise (Ambika golden card, bank A 066).
+- `A/067-emperor` — Emperor (Ambika golden card, bank A 067).
+- `A/068-dahkand` — Dahkand (Ambika golden card, bank A 068).
+- `A/069-haunted` — Haunted (Ambika golden card, bank A 069).
+- `A/070-ppgpuram` — Ppgpuram (Ambika golden card, bank A 070).
+- `A/071-owl` — Owl (Ambika golden card, bank A 071).
+- `A/072-canada` — Canada (Ambika golden card, bank A 072).
+- `A/073-simple-brass` — Simple brass (Ambika golden card, bank A 073).
+- `A/074-pioopioo` — Pioopioo (Ambika golden card, bank A 074).
+- `A/075-sweet` — Sweet (Ambika golden card, bank A 075).
+- `A/076-deetoon` — Deetoon (Ambika golden card, bank A 076).
+- `A/077-pwm-brass` — Pwm brass (Ambika golden card, bank A 077).
+- `A/078-arp-synth` — Arp synth (Ambika golden card, bank A 078).
+- `A/079-pom-poko` — Pom poko (Ambika golden card, bank A 079).
+- `A/080-wasp` — Wasp (Ambika golden card, bank A 080).
+- `A/081-leitmtiv` — Leitmtiv (Ambika golden card, bank A 081).
+- `A/082-berlin` — Berlin (Ambika golden card, bank A 082).
+- `A/083-rio` — Rio (Ambika golden card, bank A 083).
+- `A/084-badtaste` — Badtaste (Ambika golden card, bank A 084).
+- `A/085-maritron` — Maritron (Ambika golden card, bank A 085).
+- `A/086-rendezvous` — RendezVous (Ambika golden card, bank A 086).
+- `A/087-rex-rezz` — Rex|Rezz (Ambika golden card, bank A 087).
+- `A/088-cowgirl` — Cowgirl (Ambika golden card, bank A 088). LFO 1 was tempo-synced.
+- `A/089-suomi` — Suomi (Ambika golden card, bank A 089).
+- `A/090-goarp` — Goarp (Ambika golden card, bank A 090). LFO 1 was tempo-synced; 1 sequencer/arp routing(s) dropped.
+- `A/091-marumeow` — Marumeow (Ambika golden card, bank A 091).
+- `A/092-bloby` — Bloby (Ambika golden card, bank A 092). 1 sequencer/arp routing(s) dropped.
+- `A/093-neowaves` — Neowaves (Ambika golden card, bank A 093). 1 sequencer/arp routing(s) dropped.
+- `A/094-siddhart` — Siddhart (Ambika golden card, bank A 094). LFO 2 was tempo-synced; 2 sequencer/arp routing(s) dropped.
+- `A/095-wavesurf` — Wavesurf (Ambika golden card, bank A 095).
+- `A/096-xterm` — Xterm (Ambika golden card, bank A 096). 3 sequencer/arp routing(s) dropped.
+- `A/097-seti` — Seti (Ambika golden card, bank A 097).
+- `A/098-sorrow` — Sorrow (Ambika golden card, bank A 098). LFO 1 was tempo-synced; LFO 2 was tempo-synced; 1 sequencer/arp routing(s) dropped.
+- `A/099-migrax` — Migrax (Ambika golden card, bank A 099). LFO 1 was tempo-synced; LFO 2 was tempo-synced; 2 sequencer/arp routing(s) dropped.
+- `A/100-vibro555` — Vibro555 (Ambika golden card, bank A 100).
+- `A/101-lofiflut` — LoFiFlut (Ambika golden card, bank A 101).
+- `A/102-nes-bass` — NES bass (Ambika golden card, bank A 102). 2 sequencer/arp routing(s) dropped.
+- `A/103-nessie` — NESsie (Ambika golden card, bank A 103).
+- `A/104-noise-bell` — Noise Bell (Ambika golden card, bank A 104).
+- `A/105-cassiope` — Cassiope (Ambika golden card, bank A 105).
+- `A/106-chipcore` — Chipcore (Ambika golden card, bank A 106). LFO 2 was tempo-synced; 2 sequencer/arp routing(s) dropped.
+- `A/107-blinky` — Blinky (Ambika golden card, bank A 107). LFO 1 was tempo-synced; LFO 2 was tempo-synced.
+- `A/108-vocochip` — Vocochip (Ambika golden card, bank A 108). LFO 2 was tempo-synced; 1 sequencer/arp routing(s) dropped.
+- `A/109-bob` — Bob (Ambika golden card, bank A 109). 1 sequencer/arp routing(s) dropped.
+- `A/110-voxelito` — Voxelito (Ambika golden card, bank A 110).
+- `A/111-lev-dub` — Lev+dub (Ambika golden card, bank A 111). 2 sequencer/arp routing(s) dropped.
+- `A/112-woice` — Woice (Ambika golden card, bank A 112).
+- `A/113-a-voice` — A voice (Ambika golden card, bank A 113).
+- `A/114-radh-second` — Radh/second (Ambika golden card, bank A 114).
+- `A/115-kutcheri` — Kutcheri (Ambika golden card, bank A 115). LFO 1 retriggered ENV 1 each cycle.
+- `A/116-deus-ex` — Deus-ex (Ambika golden card, bank A 116).
+- `A/117-ominous` — Ominous (Ambika golden card, bank A 117). LFO 1 retriggered ENV 1 each cycle; 1 sequencer/arp routing(s) dropped.
+- `A/118-clipper` — Clipper (Ambika golden card, bank A 118).
+- `A/119-imodium` — Imodium (Ambika golden card, bank A 119).
+- `A/120-lazerbird` — LazerBird (Ambika golden card, bank A 120). LFO 1 was tempo-synced; LFO 2 was tempo-synced.
+- `A/121-auto-tek` — Auto-tek (Ambika golden card, bank A 121). LFO 1 retriggered ENV 1 each cycle.
+- `A/122-planet-sex` — Planet sex (Ambika golden card, bank A 122). 1 sequencer/arp routing(s) dropped.
+- `A/123-kicker` — Kicker (Ambika golden card, bank A 123).
+- `A/124-snare` — Snare (Ambika golden card, bank A 124).
+- `A/125-congas` — Congas (Ambika golden card, bank A 125).
+- `A/126-cowbell` — Cowbell (Ambika golden card, bank A 126).
+- `A/127-woodtock` — Woodtock (Ambika golden card, bank A 127).
+- `B/000-bandpad` — Bandpad (Ambika golden card, bank B 000).
+- `B/001-digiharp` — Digiharp (Ambika golden card, bank B 001).
+- `B/002-bread-butter` — Bread&Butter (Ambika golden card, bank B 002).
+- `B/003-polarstation` — PolarStation (Ambika golden card, bank B 003).
+- `B/004-thecounterforce` — TheCounterforce (Ambika golden card, bank B 004).
+- `B/005-glitchyglitter` — GlitchyGlitter (Ambika golden card, bank B 005). LFO 1 was tempo-synced; LFO 2 was tempo-synced.
+- `B/006-ghost-world` — Ghost World (Ambika golden card, bank B 006).
+- `B/007-carrie` — Carrie (Ambika golden card, bank B 007).
+- `B/008-autoae` — AutoAe (Ambika golden card, bank B 008).
+- `B/009-gender-bender` — Gender Bender (Ambika golden card, bank B 009).
+- `B/010-maraudeur` — Maraudeur (Ambika golden card, bank B 010).
+- `B/011-vishuv` — Vishuv (Ambika golden card, bank B 011).
+- `B/012-chainsawclavivx` — ChainsawClavivx (Ambika golden card, bank B 012).
+- `B/013-dxdirtyground` — DXDirtyGround (Ambika golden card, bank B 013).
+- `B/014-vibrator` — Vibrator (Ambika golden card, bank B 014).
+- `B/015-trespassers` — Trespassers (Ambika golden card, bank B 015).
+- `B/016-patchouli` — Patchouli (Ambika golden card, bank B 016).
+- `B/017-yoyodine` — Yoyodine (Ambika golden card, bank B 017).
+- `B/018-epic` — Epic (Ambika golden card, bank B 018).
+- `B/019-spankulatrix` — Spankulatrix (Ambika golden card, bank B 019).
+- `B/020-khoyakhoyachand` — KhoyaKhoyaChand (Ambika golden card, bank B 020).
+- `B/021-youth-laughter` — Youth&Laughter (Ambika golden card, bank B 021).
+- `F/000-staticit` — StaticiT (Ambika golden card, bank F 000).
+- `F/001-bitburga` — BitBurga (Ambika golden card, bank F 001).
+- `F/002-bitwize` — Bitwize (Ambika golden card, bank F 002).
+- `F/003-abitandc` — aBitAndC (Ambika golden card, bank F 003).
+- `F/004-game-day` — Game Day (Ambika golden card, bank F 004).
+- `F/005-freakon` — FreaKon (Ambika golden card, bank F 005).
+- `F/006-digitale` — DigiTale (Ambika golden card, bank F 006).
+- `F/007-ironyman` — IronyMan (Ambika golden card, bank F 007).
+- `F/008-monstink` — MonstInk (Ambika golden card, bank F 008).
+- `F/009-helisynt` — HeliSynt (Ambika golden card, bank F 009).
+- `F/010-operator` — Operator (Ambika golden card, bank F 010).
+- `F/011-antennae` — Antennae (Ambika golden card, bank F 011).
+- `F/012-migraine` — Migraine (Ambika golden card, bank F 012).
+- `F/013-kick-out` — Kick Out (Ambika golden card, bank F 013).
+- `F/014-gear-up` — Gear Up! (Ambika golden card, bank F 014).
+- `F/015-scubabel` — Scubabel (Ambika golden card, bank F 015).
+- `F/016-compusay` — CompuSay (Ambika golden card, bank F 016).
+- `F/017-ndcision` — NDcision (Ambika golden card, bank F 017).
+- `F/018-mach-ein` — Mach Ein (Ambika golden card, bank F 018).
+- `F/019-preciou2` — Preciou2 (Ambika golden card, bank F 019).
+- `F/020-humanoid` — Humanoid (Ambika golden card, bank F 020).
+- `F/021-synk` — Synk (Ambika golden card, bank F 021).
+- `F/022-finalead` — FinaLead (Ambika golden card, bank F 022).
+- `F/023-fuzzlead` — FuzzLead (Ambika golden card, bank F 023).
+- `F/024-gnarly` — Gnarly (Ambika golden card, bank F 024).
+- `F/025-meenie` — Meenie (Ambika golden card, bank F 025).
+- `F/026-fmate` — FMate (Ambika golden card, bank F 026).
+- `F/027-heil-boy` — Heil Boy (Ambika golden card, bank F 027).
+- `F/028-destroy` — Destroy! (Ambika golden card, bank F 028).
+- `F/029-dis-tort` — Dis Tort (Ambika golden card, bank F 029).
+- `F/030-invaders` — Invaders (Ambika golden card, bank F 030).
+- `F/031-n-n` — @$\n!n (Ambika golden card, bank F 031).
+- `F/032-compusyn` — CompuSyn (Ambika golden card, bank F 032).
+- `F/033-zapazapa` — ZapaZapa (Ambika golden card, bank F 033).
+- `F/034-oldie` — Oldie (Ambika golden card, bank F 034).
+- `F/035-brastles` — Brastles (Ambika golden card, bank F 035).
+- `F/036-chiffty` — Chiffty (Ambika golden card, bank F 036).
+- `F/037-altosynt` — AltoSynt (Ambika golden card, bank F 037).
+- `F/038-polywoly` — PolyWoly (Ambika golden card, bank F 038).
+- `F/039-sawtov` — Sawtov (Ambika golden card, bank F 039).
+- `F/040-sawtov2` — Sawtov2 (Ambika golden card, bank F 040).
+- `F/041-shaggy` — Shaggy (Ambika golden card, bank F 041).
+- `F/042-elektrik` — ElekTrik (Ambika golden card, bank F 042).
+- `F/043-el-vibra` — El Vibra (Ambika golden card, bank F 043).
+- `F/044-or-gamey` — Or'Gamey (Ambika golden card, bank F 044).
+- `F/045-keystone` — KeyStone (Ambika golden card, bank F 045).
+- `F/046-orgre` — Orgre (Ambika golden card, bank F 046).
+- `F/047-vibrano` — Vibrano (Ambika golden card, bank F 047).
+- `F/048-polwazit` — PolWazit (Ambika golden card, bank F 048).
+- `F/049-metalick` — MetaLick (Ambika golden card, bank F 049).
+- `F/050-keyringa` — Keyringa (Ambika golden card, bank F 050).
+- `F/051-chaoptic` — Chaoptic (Ambika golden card, bank F 051).
+- `F/052-synodian` — Synodian (Ambika golden card, bank F 052).
+- `F/053-syncelli` — Syncelli (Ambika golden card, bank F 053).
+- `F/054-l7ba55` — L7Ba55 (Ambika golden card, bank F 054).
+- `F/055-ctbassie` — CtBassie (Ambika golden card, bank F 055).
+- `F/056-blimey` — Blimey! (Ambika golden card, bank F 056).
+- `F/057-basingya` — BasingYa (Ambika golden card, bank F 057).
+- `F/058-bassfshn` — BassFshn (Ambika golden card, bank F 058).
+- `F/059-resobass` — ResoBass (Ambika golden card, bank F 059).
+- `F/060-bacyst` — BaCyst (Ambika golden card, bank F 060).
+- `F/061-ringbass` — RingBass (Ambika golden card, bank F 061).
+- `F/062-fuzz-fm` — Fuzz FM (Ambika golden card, bank F 062).
+- `F/063-105-9-fm` — 105.9 FM (Ambika golden card, bank F 063).
+- `F/064-wowwop` — WowWop (Ambika golden card, bank F 064).
+- `F/065-manilla` — Manilla (Ambika golden card, bank F 065).
+- `F/066-hammered` — Hammered (Ambika golden card, bank F 066).
+- `F/067-highres` — HighRes (Ambika golden card, bank F 067).
+- `F/068-fminate` — FMinate (Ambika golden card, bank F 068).
+- `F/069-eerimone` — EeriMone (Ambika golden card, bank F 069).
+- `F/070-sawoff` — SawOff (Ambika golden card, bank F 070).
+- `F/071-oboelysk` — Oboelysk (Ambika golden card, bank F 071).
+- `F/072-notepad` — NotePad (Ambika golden card, bank F 072).
+- `F/073-phadthai` — PhadThai (Ambika golden card, bank F 073).
+- `F/074-broomin` — Broomin' (Ambika golden card, bank F 074).
+- `F/075-resopad` — ResoPad (Ambika golden card, bank F 075).
+- `F/076-gnasher` — Gnasher (Ambika golden card, bank F 076).
+- `F/077-star-ere` — Star'Ere (Ambika golden card, bank F 077).
+- `F/078-bassball` — BassBall (Ambika golden card, bank F 078).
+- `F/079-leadpipe` — LeadPipe (Ambika golden card, bank F 079).
+- `S/000-junon` — Junon (Ambika golden card, bank S 000).
+- `S/001-moof` — Moof? (Ambika golden card, bank S 001).
+- `S/002-moonrise` — Moonrise (Ambika golden card, bank S 002).
+- `S/003-basic` — Basic (Ambika golden card, bank S 003).
+- `S/004-virgin` — Virgin (Ambika golden card, bank S 004).
+- `S/005-flo-bass` — Flo bass (Ambika golden card, bank S 005).
+- `S/006-medular` — Medular (Ambika golden card, bank S 006).
+- `S/007-bitbass` — Bitbass (Ambika golden card, bank S 007).
+- `S/008-shorty` — Shorty (Ambika golden card, bank S 008).
+- `S/009-vicdbass` — VICdBass (Ambika golden card, bank S 009).
+- `S/010-sawwy` — Sawwy (Ambika golden card, bank S 010).
+- `S/011-korgasm` — Korgasm (Ambika golden card, bank S 011).
+- `S/012-teebee` — Teebee (Ambika golden card, bank S 012).
+- `S/013-reason` — Reason (Ambika golden card, bank S 013).
+- `S/014-pulsar` — Pulsar (Ambika golden card, bank S 014).
+- `S/015-puddle` — Puddle (Ambika golden card, bank S 015).
+- `S/016-liquid` — Liquid (Ambika golden card, bank S 016).
+- `S/017-flateric` — Flateric (Ambika golden card, bank S 017).
+- `S/018-wobble-bass` — Wobble bass (Ambika golden card, bank S 018).
+- `S/019-blop-bass` — Blop bass (Ambika golden card, bank S 019).
+- `S/020-digi-bass` — Digi bass (Ambika golden card, bank S 020).
+- `S/021-digo-bass` — Digo bass (Ambika golden card, bank S 021).
+- `S/022-cavemen` — Cavemen (Ambika golden card, bank S 022).
+- `S/023-digattak` — Digattak (Ambika golden card, bank S 023).
+- `S/024-borg` — Borg (Ambika golden card, bank S 024).
+- `S/025-judith` — Judith (Ambika golden card, bank S 025).
+- `S/026-fatbass` — Fatbass (Ambika golden card, bank S 026).
+- `S/027-chipie` — Chipie (Ambika golden card, bank S 027).
+- `S/028-bacon` — Bacon (Ambika golden card, bank S 028).
+- `S/029-esq-0-75` — Esq-0.75 (Ambika golden card, bank S 029).
+- `S/030-wowwy` — Wowwy (Ambika golden card, bank S 030).
+- `S/031-sexy-boy` — Sexy boy (Ambika golden card, bank S 031).
+- `S/032-groowox` — Groowox (Ambika golden card, bank S 032).
+- `S/033-beastie` — Beastie (Ambika golden card, bank S 033).
+- `S/034-slap` — Slap (Ambika golden card, bank S 034).
+- `S/035-pk-bass` — Pk bass (Ambika golden card, bank S 035).
+- `S/036-tremolo` — Tremolo (Ambika golden card, bank S 036).
+- `S/037-pythagore` — Pythagore (Ambika golden card, bank S 037).
+- `S/038-hammrhnd` — Hammrhnd (Ambika golden card, bank S 038).
+- `S/039-e-piano` — E-piano (Ambika golden card, bank S 039).
+- `S/040-tinytine` — Tinytine (Ambika golden card, bank S 040).
+- `S/041-fmfmfmfm` — FmFmFmFm (Ambika golden card, bank S 041).
+- `S/042-fullbell` — Fullbell (Ambika golden card, bank S 042).
+- `S/043-electrob` — ElectroB (Ambika golden card, bank S 043).
+- `S/044-ringing` — Ringing (Ambika golden card, bank S 044).
+- `S/045-belpiano` — Belpiano (Ambika golden card, bank S 045).
+- `S/046-fm-glass` — Fm glass (Ambika golden card, bank S 046). LFO 1 was tempo-synced.
+- `S/047-persephone` — Persephone (Ambika golden card, bank S 047).
+- `S/048-collegue` — Collegue (Ambika golden card, bank S 048).
+- `S/049-noleleva` — Noleleva (Ambika golden card, bank S 049).
+- `S/050-tuyaux` — Tuyaux (Ambika golden card, bank S 050).
+- `S/051-ahh-paris` — Ahh Paris (Ambika golden card, bank S 051).
+- `S/052-follow` — Follow ! (Ambika golden card, bank S 052).
+- `S/053-pwm-sweep` — Pwm sweep (Ambika golden card, bank S 053).
+- `S/054-slow-sweep` — Slow sweep (Ambika golden card, bank S 054).
+- `S/055-fat-sweeep` — Fat sweeep (Ambika golden card, bank S 055).
+- `S/056-stringe` — Stringe (Ambika golden card, bank S 056).
+- `S/057-big-string` — Big string (Ambika golden card, bank S 057).
+- `S/058-pwm-string` — Pwm string (Ambika golden card, bank S 058).
+- `S/059-strings` — Strings (Ambika golden card, bank S 059).
+- `S/060-planar` — Planar (Ambika golden card, bank S 060).
+- `S/061-sleepy` — Sleepy (Ambika golden card, bank S 061).
+- `S/062-klaa-tuu` — Klaa'tuu (Ambika golden card, bank S 062).
+- `S/063-unity` — Unity (Ambika golden card, bank S 063). LFO 2 was tempo-synced.
+- `S/064-repliknt` — Repliknt (Ambika golden card, bank S 064).
+- `S/065-bows` — Bows (Ambika golden card, bank S 065).
+- `S/066-blaise` — Blaise (Ambika golden card, bank S 066).
+- `S/067-emperor` — Emperor (Ambika golden card, bank S 067).
+- `S/068-dahkand` — Dahkand (Ambika golden card, bank S 068).
+- `S/069-haunted` — Haunted (Ambika golden card, bank S 069).
+- `S/070-ppgpuram` — Ppgpuram (Ambika golden card, bank S 070).
+- `S/071-owl` — Owl (Ambika golden card, bank S 071).
+- `S/072-canada` — Canada (Ambika golden card, bank S 072).
+- `S/073-simple-brass` — Simple brass (Ambika golden card, bank S 073).
+- `S/074-pioopioo` — Pioopioo (Ambika golden card, bank S 074).
+- `S/075-sweet` — Sweet (Ambika golden card, bank S 075).
+- `S/076-deetoon` — Deetoon (Ambika golden card, bank S 076).
+- `S/077-pwm-brass` — Pwm brass (Ambika golden card, bank S 077).
+- `S/078-arp-synth` — Arp synth (Ambika golden card, bank S 078).
+- `S/079-pom-poko` — Pom poko (Ambika golden card, bank S 079).
+- `S/080-wasp` — Wasp (Ambika golden card, bank S 080).
+- `S/081-leitmtiv` — Leitmtiv (Ambika golden card, bank S 081).
+- `S/082-berlin` — Berlin (Ambika golden card, bank S 082).
+- `S/083-rio` — Rio (Ambika golden card, bank S 083).
+- `S/084-badtaste` — Badtaste (Ambika golden card, bank S 084).
+- `S/085-maritron` — Maritron (Ambika golden card, bank S 085).
+- `S/086-rendezvous` — RendezVous (Ambika golden card, bank S 086).
+- `S/087-rex-rezz` — Rex|Rezz (Ambika golden card, bank S 087).
+- `S/088-cowgirl` — Cowgirl (Ambika golden card, bank S 088). LFO 1 was tempo-synced.
+- `S/089-suomi` — Suomi (Ambika golden card, bank S 089).
+- `S/090-goarp` — Goarp (Ambika golden card, bank S 090). LFO 1 was tempo-synced; 1 sequencer/arp routing(s) dropped.
+- `S/091-marumeow` — Marumeow (Ambika golden card, bank S 091).
+- `S/092-bloby` — Bloby (Ambika golden card, bank S 092). 1 sequencer/arp routing(s) dropped.
+- `S/093-neowaves` — Neowaves (Ambika golden card, bank S 093). 1 sequencer/arp routing(s) dropped.
+- `S/094-siddhart` — Siddhart (Ambika golden card, bank S 094). LFO 2 was tempo-synced; 2 sequencer/arp routing(s) dropped.
+- `S/095-wavesurf` — Wavesurf (Ambika golden card, bank S 095).
+- `S/096-xterm` — Xterm (Ambika golden card, bank S 096). 3 sequencer/arp routing(s) dropped.
+- `S/097-seti` — Seti (Ambika golden card, bank S 097).
+- `S/098-sorrow` — Sorrow (Ambika golden card, bank S 098). LFO 1 was tempo-synced; LFO 2 was tempo-synced; 1 sequencer/arp routing(s) dropped.
+- `S/099-migrax` — Migrax (Ambika golden card, bank S 099). LFO 1 was tempo-synced; LFO 2 was tempo-synced; 2 sequencer/arp routing(s) dropped.
+- `S/100-vibro555` — Vibro555 (Ambika golden card, bank S 100).
+- `S/101-lofiflut` — LoFiFlut (Ambika golden card, bank S 101).
+- `S/102-nes-bass` — NES bass (Ambika golden card, bank S 102). 2 sequencer/arp routing(s) dropped.
+- `S/103-nessie` — NESsie (Ambika golden card, bank S 103).
+- `S/104-noise-bell` — Noise Bell (Ambika golden card, bank S 104).
+- `S/105-cassiope` — Cassiope (Ambika golden card, bank S 105).
+- `S/106-chipcore` — Chipcore (Ambika golden card, bank S 106). LFO 2 was tempo-synced; 2 sequencer/arp routing(s) dropped.
+- `S/107-blinky` — Blinky (Ambika golden card, bank S 107). LFO 1 was tempo-synced; LFO 2 was tempo-synced.
+- `S/108-vocochip` — Vocochip (Ambika golden card, bank S 108). LFO 2 was tempo-synced; 1 sequencer/arp routing(s) dropped.
+- `S/109-bob` — Bob (Ambika golden card, bank S 109). 1 sequencer/arp routing(s) dropped.
+- `S/110-voxelito` — Voxelito (Ambika golden card, bank S 110).
+- `S/111-lev-dub` — Lev+dub (Ambika golden card, bank S 111). 2 sequencer/arp routing(s) dropped.
+- `S/112-woice` — Woice (Ambika golden card, bank S 112).
+- `S/113-a-voice` — A voice (Ambika golden card, bank S 113).
+- `S/114-radh-second` — Radh/second (Ambika golden card, bank S 114).
+- `S/115-kutcheri` — Kutcheri (Ambika golden card, bank S 115). LFO 1 retriggered ENV 1 each cycle.
+- `S/116-deus-ex` — Deus-ex (Ambika golden card, bank S 116).
+- `S/117-ominous` — Ominous (Ambika golden card, bank S 117). LFO 1 retriggered ENV 1 each cycle; 1 sequencer/arp routing(s) dropped.
+- `S/118-clipper` — Clipper (Ambika golden card, bank S 118).
+- `S/119-imodium` — Imodium (Ambika golden card, bank S 119).
+- `S/120-lazerbird` — LazerBird (Ambika golden card, bank S 120). LFO 1 was tempo-synced; LFO 2 was tempo-synced.
+- `S/121-auto-tek` — Auto-tek (Ambika golden card, bank S 121). LFO 1 retriggered ENV 1 each cycle.
+- `S/122-planet-sex` — Planet sex (Ambika golden card, bank S 122). 1 sequencer/arp routing(s) dropped.
+- `S/123-kicker` — Kicker (Ambika golden card, bank S 123).
+- `S/124-snare` — Snare (Ambika golden card, bank S 124).
+- `S/125-congas` — Congas (Ambika golden card, bank S 125).
+- `S/126-cowbell` — Cowbell (Ambika golden card, bank S 126).
+- `S/127-woodtock` — Woodtock (Ambika golden card, bank S 127).
 
 ## bass
 
@@ -1317,6 +1808,41 @@ Presets:
 - `slab/water-drop` — Slab: a water drop's bloop. Source made with Stable Audio 3 Small SFX (Stability AI), prompt "one drop of water falling into a sink, a clear hollow bloop, single sound, quiet room", seed 402; stored as CMI voice RAM, 8-bit at 24 kHz. CC0.
 - `slab/whip-slap` — Slab: a sharp whip-crack slap. Source made with Stable Audio 3 Small SFX (Stability AI), prompt "a single sharp whip crack slap, dry close microphone", seed 408; stored as CMI voice RAM, 8-bit at 24 kHz. CC0.
 
+## zither
+
+**Magnet Zither**, instrument, 10 voices.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `zi-tuning` | STRINGS | TUNING | 0 OPEN D / 1 MINOR / 2 PENTA / 3 5THS / 4 LYDIAN / 5 CLUSTER / 6 HARM | 0 | switch |
+| `zi-root` | STRINGS | ROOT | -12 … 12 | 0 | linear |
+| `zi-ring` | STRINGS | RING | 0.5 … 30 | 8 | exp |
+| `zi-tone` | STRINGS | TONE | 0 … 1 | 0.5 | linear |
+| `zi-pluck` | STRINGS | PLUCK | 0 … 1 | 0.3 | linear |
+| `zi-damp` | STRINGS | DAMP | 0 RING / 1 DAMP | 0 | switch |
+| `zi-a-on` | DISC A | ON | 0 OFF / 1 ON | 0 | switch |
+| `zi-a-spin` | DISC A | SPIN | 4 … 400 | 55 | exp |
+| `zi-a-height` | DISC A | HEIGHT | 0 … 1 | 0.3 | linear |
+| `zi-a-across` | DISC A | ACROSS | 0 … 1 | 0.3 | linear |
+| `zi-a-along` | DISC A | ALONG | 0.03 … 0.5 | 0.3 | linear |
+| `zi-b-on` | DISC B | ON | 0 OFF / 1 ON | 0 | switch |
+| `zi-b-spin` | DISC B | SPIN | 4 … 400 | 147 | exp |
+| `zi-b-height` | DISC B | HEIGHT | 0 … 1 | 0.4 | linear |
+| `zi-b-across` | DISC B | ACROSS | 0 … 1 | 0.75 | linear |
+| `zi-b-along` | DISC B | ALONG | 0.03 … 0.5 | 0.15 | linear |
+| `zi-out` | OUT | LEVEL | -24 … 12 | 0 | linear |
+
+Presets:
+
+- `cluster-shimmer` — Short-ringing cluster under a fast disc near the bridge: a bright uneasy shimmer; pluck over it from the keys
+- `damped-penta` — Short damped plucks on the pentatonic tuning, near the bridge
+- `harmonic-bloom` — Strings tuned to the partials of D1 with the disc at D1: every string in reach blooms; pluck over it from the keys
+- `pluck-over-drone` — A low disc keeps the minor tuning humming; plucks ring over it
+- `plucked-minor` — No discs: a plain plucked zither on the minor tuning, long ring
+- `slow-disc-drone` — One disc passing at D1 over the low strings; sounds by itself on an empty track; pluck over it from the keys
+- `soft-harp` — Plucked near the middle, dark and round, open D
+- `two-discs` — A slow disc low and a fast one high on the minor tuning; automate the SPINs; pluck over it from the keys
+
 ## amp2
 
 **Ampstack**, stereo insert effect.
@@ -1566,6 +2092,44 @@ Presets:
 - `slapback` — Short slapback for spoken voice
 - `soft-pad-wash` — Soft blurred pad delay
 - `tape-echo` — Warm tape echo, a touch of wow and saturation
+
+## echo2
+
+**Tape Echo**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `echo-length` | LOOP | LENGTH | 0.06 … 4 | 0.42 | exp |
+| `echo-speed` | LOOP | SPEED | 0.5 … 2 | 1 | exp |
+| `echo-sync` | LOOP | SYNC | 0 FREE / 1 SYNC | 0 | switch |
+| `echo-div` | LOOP | DIV | 0 1/8 / 1 1/8. / 2 1/4 / 3 1/2 / 4 3/4 / 5 1 BAR / 6 2 BAR | 3 | switch |
+| `echo-h1` | HEADS | 1 | 0 OFF / 1 ON | 0 | switch |
+| `echo-h2` | HEADS | 2 | 0 OFF / 1 ON | 0 | switch |
+| `echo-h3` | HEADS | 3 | 0 OFF / 1 ON | 0 | switch |
+| `echo-h4` | HEADS | 4 | 0 OFF / 1 ON | 1 | switch |
+| `echo-mode` | HEADS | MODE | 0 ECHO / 1 SWELL | 0 | switch |
+| `echo-spread` | HEADS | SPREAD | 0 … 1 | 0.5 | linear |
+| `echo-repeat` | RECORD | REPEAT | 0 … 1.1 | 0.45 | linear |
+| `echo-tone` | RECORD | TONE | 500 … 16000 | 4500 | exp |
+| `echo-drive` | RECORD | DRIVE | 0 … 1 | 0.25 | linear |
+| `echo-freeze` | RECORD | FREEZE | 0 OFF / 1 ON | 0 | switch |
+| `echo-wow` | TAPE | WOW | 0 … 1 | 0.3 | linear |
+| `echo-flutter` | TAPE | FLUTTER | 0 … 1 | 0.3 | linear |
+| `echo-hiss` | TAPE | HISS | 0 … 1 | 0.35 | linear |
+| `echo-pops` | TAPE | POPS | 0 … 1 | 0.25 | linear |
+| `echo-wear` | TAPE | WEAR | 0 … 1 | 0.15 | linear |
+| `echo-mix` | OUT | MIX | 0 … 1 | 0.35 | pow |
+
+Presets:
+
+- `drum-echo` — Heads 2 and 4, a dotted bounce that darkens; the everyday setting
+- `four-head-swell` — All four heads recorded again: the repeats smear into a wash, a reverb of sorts
+- `half-speed-haze` — The motor at half speed: long, dark, an octave of travel when you move SPEED
+- `howl` — REPEAT past 1: the loop feeds itself and howls, held by the tape curve. Ride SPEED
+- `slapback` — One short head, one repeat, a little drive
+- `sound-on-sound` — A four-second loop that fades over a minute: play over what is there. Use it fully wet on a send
+- `synced-quarters` — A one-bar loop in time: the heads fall on the quarters
+- `worn-loop` — A tired transport: deep wow, dropouts, pops, each pass duller
 
 ## eq2
 
@@ -2148,3 +2712,36 @@ Presets:
 - `tremolo` — Sine tremolo on eighths, the filter open: AMP does the work
 - `wobble-eighths` — Sine wobble on eighth notes: a 24 dB lowpass breathing from 120 Hz up five octaves, driven - the dubstep and electro bass move
 - `wub-triplets` — Saw-down wub on eighth triplets: each beat opens hard and closes, the lowpass resonant
+
+## zitherfx
+
+**Magnet Zither FX**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `zi-tuning` | STRINGS | TUNING | 0 OPEN D / 1 MINOR / 2 PENTA / 3 5THS / 4 LYDIAN / 5 CLUSTER / 6 HARM | 0 | switch |
+| `zi-root` | STRINGS | ROOT | -12 … 12 | 0 | linear |
+| `zi-ring` | STRINGS | RING | 0.5 … 30 | 8 | exp |
+| `zi-tone` | STRINGS | TONE | 0 … 1 | 0.5 | linear |
+| `zi-coil` | STRINGS | COIL | 0 … 1 | 0.5 | linear |
+| `zi-a-on` | DISC A | ON | 0 OFF / 1 ON | 0 | switch |
+| `zi-a-spin` | DISC A | SPIN | 4 … 400 | 55 | exp |
+| `zi-a-height` | DISC A | HEIGHT | 0 … 1 | 0.3 | linear |
+| `zi-a-across` | DISC A | ACROSS | 0 … 1 | 0.3 | linear |
+| `zi-a-along` | DISC A | ALONG | 0.03 … 0.5 | 0.3 | linear |
+| `zi-b-on` | DISC B | ON | 0 OFF / 1 ON | 0 | switch |
+| `zi-b-spin` | DISC B | SPIN | 4 … 400 | 147 | exp |
+| `zi-b-height` | DISC B | HEIGHT | 0 … 1 | 0.4 | linear |
+| `zi-b-across` | DISC B | ACROSS | 0 … 1 | 0.75 | linear |
+| `zi-b-along` | DISC B | ALONG | 0.03 … 0.5 | 0.15 | linear |
+| `zi-mix` | OUT | MIX | 0 … 1 | 0.5 | linear |
+| `zi-out` | OUT | LEVEL | -24 … 12 | 0 | linear |
+
+Presets:
+
+- `cluster-shimmer` — Short-ringing cluster under a fast disc near the bridge: a bright uneasy shimmer
+- `harmonic-bloom` — Strings tuned to the partials of D1 with the disc at D1: every string in reach blooms
+- `singing-minor` — All wet: only the D minor strings are heard, sung by whatever goes in
+- `slow-disc-drone` — One disc passing at D1 over the low strings; sounds by itself on an empty track
+- `sympathetic-strings` — Insert after a synth or voice: the open-D strings that agree with a note answer it
+- `two-discs` — A slow disc low and a fast one high on the minor tuning; automate the SPINs

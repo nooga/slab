@@ -76,6 +76,10 @@ Proposal: a generator mode, or the smaller rule that a voice machine
 declaring `-1.0 tail!` keeps its shared word awake from load. The
 second is a few lines in `renderVoiceSegment` and `updateIdle`.
 
+Built, 2026-11-11: the smaller rule, in `renderVoiceSegment`
+(docs/04 §Shared state). The instrument `zither` uses it; the insert is
+now `zitherfx`.
+
 ### 7. Live replacement while playing
 
 Source changes take effect when a new instance loads. With the bench

@@ -2844,7 +2844,9 @@ fn renderVoiceSegment(self: *FyRawMachine, start: usize, end: usize) !void {
     if (self.shared_caller == null) return renderVoices(self, start, end);
     // Shared state (docs/04): the voices, then the shared word, in steps
     // of shared_period samples.
-    if (!self.shared_awake) return renderVoices(self, start, end);
+    // A machine that never idles (`-1.0 tail!`) runs its shared word from
+    // the first block: a drone that needs no note.
+    if (!self.shared_awake and self.desc.tail_s >= 0) return renderVoices(self, start, end);
     const period = self.desc.shared_period;
     var at = start;
     while (at < end) {
@@ -7445,6 +7447,31 @@ test "shared state: voices and the shared word alternate per step, then the word
     try testing.expect(!inst.shared_awake); // under the floor all block
     testRender(mach, &ctx, &l, &r);
     for (l) |s| try testing.expectEqual(@as(f32, 0), s);
+}
+
+test "shared state: a machine that never idles runs its shared word with no note" {
+    const block = 256;
+    const inst = try FyRawMachine.create(testing.allocator, "machines/zither/zither.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    try testing.expect(inst.shared_caller != null);
+    try testing.expect(inst.desc.tail_s < 0);
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    var l: [block]f32 = @splat(0);
+    var r: [block]f32 = @splat(0);
+    // No disc, no note: silence, though the shared word runs.
+    for (0..4) |_| testRender(mach, &ctx, &l, &r);
+    for (l) |s| try testing.expectEqual(@as(f32, 0), s);
+    // A disc ON drives the strings before any note-on (docs/35).
+    inst.setControlNormSnap(controlIndexById(inst, "zi-a-on").?, 1);
+    var peak: f32 = 0;
+    for (0..40) |_| {
+        testRender(mach, &ctx, &l, &r);
+        for (l) |s| peak = @max(peak, @abs(s));
+    }
+    try testing.expect(peak > 1e-3);
 }
 
 test "shared state: the shared word sees each step's sample clock; voice-level! keeps a silent voice awake" {

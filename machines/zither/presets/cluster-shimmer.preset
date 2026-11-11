@@ -1,0 +1,16 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "zither",
+  "note": "Short-ringing cluster under a fast disc near the bridge: a bright uneasy shimmer; pluck over it from the keys",
+  "params": {
+    "zi-tuning": 5,
+    "zi-ring": 3,
+    "zi-tone": 0.8,
+    "zi-b-on": 1,
+    "zi-b-spin": 293.66,
+    "zi-b-height": 0.2,
+    "zi-b-across": 0.5,
+    "zi-b-along": 0.08
+  }
+}

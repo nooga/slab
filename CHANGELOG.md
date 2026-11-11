@@ -6,6 +6,17 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Magnet Zither**, a new instrument: ten strings in one of seven tunings,
+  plucked from the keys, and two spinning magnet discs that make them drone
+  with no note held. Sweep a disc's SPIN to walk through the tuning's
+  partials. **Magnet Zither FX** is the same strings as an insert that
+  answers the notes in whatever you feed it.
+- **Tape Echo**, a new effect: a tape loop past four playback heads. Short
+  loops are a multi-head echo, SWELL smears the heads into a wash, long
+  loops are sound on sound, and FREEZE holds the tape. Changing SPEED bends
+  the pitch while the motor catches up, with wow, flutter, hiss and pops to
+  taste.
+
 ## 0.0.23 — 2026-11-04
 
 - **Notes don't get stuck.** A note no longer hangs when you edit a clip

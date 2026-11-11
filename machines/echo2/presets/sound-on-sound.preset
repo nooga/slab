@@ -1,0 +1,27 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "echo2",
+  "note": "A four-second loop that fades over a minute: play over what is there. Use it fully wet on a send",
+  "params": {
+    "echo-length": 4.0,
+    "echo-speed": 1,
+    "echo-sync": 0,
+    "echo-h1": 0,
+    "echo-h2": 0,
+    "echo-h3": 0,
+    "echo-h4": 1,
+    "echo-mode": 0,
+    "echo-spread": 0.0,
+    "echo-repeat": 0.93,
+    "echo-tone": 7000,
+    "echo-drive": 0.2,
+    "echo-freeze": 0,
+    "echo-wow": 0.25,
+    "echo-flutter": 0.2,
+    "echo-hiss": 0.25,
+    "echo-pops": 0.3,
+    "echo-wear": 0.1,
+    "echo-mix": 0.5
+  }
+}
