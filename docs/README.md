@@ -148,6 +148,9 @@ status and the source before assuming a feature is absent or complete.
 50. [49-convolver.md](49-convolver.md) — the convolver (prototype): a
     host service that convolves an effect's input with an impulse response,
     and CONVO, the convolution reverb on it
+51. [50-authoring-wishlist.md](50-authoring-wishlist.md) — proposals for
+    the `dsp:` language, the machine model and the bench, from building
+    the Magnet Zither (not built)
 
 ## Terminology crib sheet
 
