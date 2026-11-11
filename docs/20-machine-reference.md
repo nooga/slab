@@ -22,6 +22,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`juno2`](#juno2) | Ju-Know | instrument | 8 | `jn-` |
 | [`kit`](#kit) | Skinwork Kit | instrument | 12 | `sk-` |
 | [`ms20`](#ms20) | SM-24 Mono | instrument | mono | `—` |
+| [`organ`](#organ) | Tonewheel Organ | instrument | 16 | `or-` |
 | [`profit5`](#profit5) | Profit-5 | instrument | 8 | `p5-` |
 | [`rack`](#rack) | Rack | instrument | 0 | `rk-` |
 | [`rhodes`](#rhodes) | Rhodes E-Piano | instrument | 8 | `rd-` |
@@ -50,6 +51,7 @@ project or preset stores (docs/19): real units for knobs, the option
 | [`oct2`](#oct2) | Octaver | effect | — | `oct-` |
 | [`phaser2`](#phaser2) | Phaser | effect | — | `ph-` |
 | [`resonator2`](#resonator2) | Modal Bank | effect | — | `rs-` |
+| [`rotary`](#rotary) | Rotary Speaker | effect | — | `ro-` |
 | [`sat2`](#sat2) | Saturator | effect | — | `sat-` |
 | [`shift2`](#shift2) | Sideband | effect | — | `shift-` |
 | [`tape2`](#tape2) | Tape | effect | — | `tape-` |
@@ -1547,6 +1549,44 @@ Presets:
 - `vibrato-lead` — Vibrato + portamento lead
 - `afterimage/ion-trail` — Resonant mono call with brief portamento and a soft onset; Afterimage Express. Overlap notes for glide.
 
+## organ
+
+**Tonewheel Organ**, instrument, 16 voices.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `or-d16` | DRAWBARS | 16 | 0 … 8 | 8 | linear |
+| `or-d513` | DRAWBARS | 5 1/3 | 0 … 8 | 8 | linear |
+| `or-d8` | DRAWBARS | 8 | 0 … 8 | 8 | linear |
+| `or-d4` | DRAWBARS | 4 | 0 … 8 | 0 | linear |
+| `or-d223` | DRAWBARS | 2 2/3 | 0 … 8 | 0 | linear |
+| `or-d2` | DRAWBARS | 2 | 0 … 8 | 0 | linear |
+| `or-d135` | DRAWBARS | 1 3/5 | 0 … 8 | 0 | linear |
+| `or-d113` | DRAWBARS | 1 1/3 | 0 … 8 | 0 | linear |
+| `or-d1` | DRAWBARS | 1 | 0 … 8 | 0 | linear |
+| `or-perc` | PERC | ON | 0 OFF / 1 ON | 0 | switch |
+| `or-pharm` | PERC | HARM | 0 2ND / 1 3RD | 1 | switch |
+| `or-pfast` | PERC | DECAY | 0 SLOW / 1 FAST | 1 | switch |
+| `or-psoft` | PERC | LEVEL | 0 NORM / 1 SOFT | 0 | switch |
+| `or-vib` | VIBRATO | MODE | 0 OFF / 1 V1 / 2 C1 / 3 V2 / 4 C2 / 5 V3 / 6 C3 | 0 | switch |
+| `or-click` | TONE | CLICK | 0 … 1 | 0.5 | linear |
+| `or-leak` | TONE | LEAK | 0 … 1 | 0.3 | linear |
+| `or-drive` | TONE | DRIVE | 0 … 1 | 0 | linear |
+| `or-volume` | TONE | VOLUME | -24 … 12 | 0 | linear |
+
+Presets:
+
+- `bass-pedal` — Sub-octave and unison for the left hand, no click
+- `full-organ` — Every drawbar out, driven
+- `gospel` — Full low end with the top drawbar for whistle; chorus on, play it through the rotary
+- `growl` — Thick and overdriven before it reaches the cabinet
+- `jazz-trio` — The first three drawbars, third-harmonic percussion and the deepest chorus
+- `perc-pop` — One drawbar and second-harmonic percussion: the plink on every detached note
+- `procession` — A hollow, stately tone for slow descending lines
+- `skank` — Short offbeat chords: bright click, no vibrato
+- `soft-flutes` — Two quiet flutes with a light vibrato
+- `whistle` — Only the top three drawbars; with fold-back the top octave repeats
+
 ## profit5
 
 **Profit-5**, instrument, 8 voices.
@@ -2511,6 +2551,35 @@ Presets:
 - `pipe-chamber` — Odd-harmonic pipe resonances, subtly split in stereo
 - `short-iron` — A short, stretched metallic mode bank for hits and rattles
 - `steel-body` — An inharmonic plate around F3, higher modes damped quickly
+
+## rotary
+
+**Rotary Speaker**, stereo insert effect.
+
+| param | section | label | range | default | notes |
+|---|---|---|---|---|---|
+| `ro-speed` | MOTOR | SPEED | 0 STOP / 1 SLOW / 2 FAST | 1 | switch |
+| `ro-slow` | MOTOR | SLOW | 0.3 … 2 | 0.8 | exp |
+| `ro-fast` | MOTOR | FAST | 3 … 10 | 6.8 | exp |
+| `ro-inertia` | MOTOR | INERTIA | 0.25 … 4 | 1 | exp |
+| `ro-drive` | CABINET | DRIVE | 0 … 1 | 0.15 | linear |
+| `ro-balance` | CABINET | BALANCE | 0 … 1 | 0.5 | linear |
+| `ro-depth` | CABINET | DEPTH | 0 … 1 | 0.7 | linear |
+| `ro-mic` | MICS | MIC | 0 … 1 | 0.4 | linear |
+| `ro-spread` | MICS | SPREAD | 0 … 0.5 | 0.3 | linear |
+| `ro-mix` | OUT | MIX | 0 … 1 | 1 | pow |
+| `ro-out` | OUT | LEVEL | -24 … 12 | 0 | linear |
+
+Presets:
+
+- `brake` — Rotors stopped: the cabinet's tone with no motion; automate SPEED from here
+- `close-mics` — Microphones against the louvres: deep tremolo, wide
+- `driven-fast` — The amp pushed hard, fast
+- `far-room` — Microphones well back: more wall than swing
+- `fast-tremolo` — Fast rotors
+- `guitar-swirl` — Mostly horn, deep bend, for guitars and electric pianos
+- `heavy-rotors` — Slow to change: the speed-up takes most of a bar
+- `slow-chorale` — Slow rotors: the default shimmer
 
 ## sat2
 

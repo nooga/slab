@@ -1,0 +1,9 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "rotary",
+  "note": "Slow rotors: the default shimmer",
+  "params": {
+    "ro-speed": 1
+  }
+}

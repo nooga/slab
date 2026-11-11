@@ -16,6 +16,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   loops are sound on sound, and FREEZE holds the tape. Changing SPEED bends
   the pitch while the motor catches up, with wow, flutter, hiss and pops to
   taste.
+- **Tonewheel Organ**, a new instrument: 91 wheels that never stop, nine
+  drawbars you can automate, percussion, scanner vibrato and chorus, key
+  click that follows how hard you play, leakage and a preamp drive.
+- **Rotary Speaker**, a new effect: a treble horn and a bass drum turning
+  in front of two microphones. Switch SPEED between STOP, SLOW and FAST
+  and the horn follows in a second while the drum takes four or five.
 
 ## 0.0.23 — 2026-11-04
 

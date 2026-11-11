@@ -151,6 +151,9 @@ status and the source before assuming a feature is absent or complete.
 51. [50-authoring-wishlist.md](50-authoring-wishlist.md) — proposals for
     the `dsp:` language, the machine model and the bench, from building
     the Magnet Zither (not built)
+53. [52-organ-rotary.md](52-organ-rotary.md) — the Tonewheel Organ (shared
+    wheels, key contacts, percussion, scanner vibrato) and the Rotary
+    Speaker (two rotors with inertia, Doppler, two microphones)
 
 ## Terminology crib sheet
 

@@ -89,6 +89,8 @@ pub const builtin_machines = [_][]const u8{
     "machines/zither/zither.fy",
     "machines/zitherfx/zitherfx.fy",
     "machines/echo2/echo2.fy",
+    "machines/organ/organ.fy",
+    "machines/rotary/rotary.fy",
 };
 
 // Soft cap used to size UI-side menu arrays; the registry itself is a

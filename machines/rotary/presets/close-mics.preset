@@ -1,0 +1,11 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "rotary",
+  "note": "Microphones against the louvres: deep tremolo, wide",
+  "params": {
+    "ro-speed": 1,
+    "ro-mic": 0.0,
+    "ro-spread": 0.45
+  }
+}

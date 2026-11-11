@@ -1,0 +1,10 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "rotary",
+  "note": "Slow to change: the speed-up takes most of a bar",
+  "params": {
+    "ro-speed": 1,
+    "ro-inertia": 2.5
+  }
+}
