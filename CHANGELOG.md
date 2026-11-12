@@ -6,6 +6,17 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Fretwire slaps.** BUZZ is now the frets themselves: a string that
+  swings far enough hits the last fret and rattles. A new SLAP knob is a
+  thumb that drives the string onto the fret, and the `slap` preset plays
+  the low strings thumbed and E2 and up popped from one track; `thumb` and
+  `pop` are each alone. Projects and presets with BUZZ above 0 sound
+  different (it used to be a soft limiter); BUZZ 0 is unchanged.
+- **Fretwire's fingered bass rings like the recording.** The `default`,
+  `p-bass`, `fingers-bridge` and `pick` presets (and the DECAY, HF DEC and
+  KNEE defaults) are refitted to a sampled roundwound bass: the low
+  mids sustain longer and the top dies sooner. Saved projects keep their
+  own knob values; ones that load these presets by name sound different.
 - **Skinwork Kit**: the cymbals and hats are rebuilt as three ringing
   plates with real nonlinear coupling and no noise. They are bright from
   the hit, hard hits bloom, a second hit adds to a cymbal that is still

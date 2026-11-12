@@ -309,6 +309,40 @@ measurements in shape, not any one instrument (our own estimates).
   on it. A string a note is played on is muted. The strings are heard
   through the pickups and the body.
 
+### Frets: buzz, slap and pop
+
+BUZZ puts the frets in reach. The string's displacement over the last
+fret (0.3 of the open string from the bridge) is the running sum of its
+velocity there: this sample's loop write less the wave that passed that
+point one comb delay earlier. It cannot pass the gap. What would carry it
+past is taken out of the wave leaving the fret one way and put into the
+wave leaving the other, the same amount in both, so a knock can reflect
+or lose energy and never add it. BUZZ 0 is off (and bit-exact with the
+kernel before); raising it closes the gap from 4.5% to 1% of a period of
+summed velocity, where a hard finger pluck swings about 3%.
+
+- **SLAP** is a thumb. The pulse is up to twice a finger's speed and
+  stops when it has carried the string to the fret (0.5 to 1.1 gaps, by
+  velocity), over about 70 µs. That stop is the click; velocity sets how
+  fast the string gets there, so how bright.
+- **A pop** is a pluck (SHAPE 1) from the far side, pulled 0.4 to 9.4
+  gaps by velocity squared, which meets the frets half a period after it
+  is let go and rattles until it has lost enough.
+- With SLAP up, a note on the upper half of the strings is popped and
+  the rest are thumbed. HAND decides the string, so it decides the split:
+  the `slap` preset (HAND 1.5) thumbs up to D#2 and pops from E2.
+
+Measured against solo slap recordings (three, CC0 and CC-BY, lossy, with
+their own EQ): a real slap's content above 2 kHz arrives in a burst 4 to
+6 ms wide that returns once a period and falls about 10 dB over three
+periods, and 3 to 8 kHz falls about 18 dB in the first 150 ms. The limiter
+this replaces had its highs 15 dB lower and gone in 200 ms. The model now
+has the bursts and the fall (thumbed E1, 3 to 8 kHz: −26, −30, −39 dB re
+peak at 6 to 20, 20 to 60 and 60 to 200 ms; the recording −25, −34, −43).
+Not matched: the recordings' scooped mids (theirs is 10 dB lower at 150
+to 800 Hz, likely EQ), and nothing here has been fitted to a clean DI
+slap note, because none was to hand.
+
 ### Fitted against recordings
 
 `tools/fit/string_fit.py` measures the attack spectrum (harmonics 1-16,
@@ -325,6 +359,18 @@ ours keeps the pluck's and pickups' comb notches. The bass reference
 shows them (its 5th harmonic is 30 dB down), so they are real. But a pick
 and two pickups fill them in more than the model does.
 
+The fingered roundwound decay (`default`, `p-bass`, `fingers-bridge`,
+`pick`, and the knobs' defaults) is fitted to Karoryfer Fashionbass at
+F1, D2 and D3: DECAY 19 s, HF DEC 0.27 s, KNEE 24. With the knee that
+high the shelf's loss rises as the harmonic number squared across the
+whole audible range, which is how the recording decays. T60 in seconds,
+model / recording, at D2: harmonic 1 16 / 19, 4 6.0 / 6.6, 8 2.0 / 3.9,
+12 1.3 / 1.3, 16 0.8 / 0.8, 20 0.6 / 0.5. The old values (12, 1.2, 9)
+had harmonics 3 to 8 ringing a third to half as long as the recording
+and those above 12 twice as long. Not matched: the recording's
+harmonic-to-harmonic scatter (its 2nd rings 5 s between a 19 s 1st and a
+21 s 3rd), and its attack has no notch as deep as the model's pluck comb.
+
 ### Cost
 
 The shared body makes the strings render in lockstep, one voice at a
@@ -339,15 +385,17 @@ sample (2.3% of a core). SYMP adds about 100 ns while it is up.
 - `guitar` (new or reworked here): twin-humbucker, p90-crunch,
   semi-hollow, out-of-phase, acoustic; jazz is now a hollow archtop on
   the neck humbucker, funk the middle and bridge single coils together.
-- `bass`: jazz-both, p-bass, hollow, acoustic; pop and slap are on a
-  bridge humbucker.
+- `bass`: jazz-both, p-bass, hollow, acoustic; `slap` (thumb and pop
+  from one track), `thumb` and `pop` are on both single coils with the
+  pickup's peak up.
 
 ## Next
 
-- **Fretwire and Rhodes.** Fretwire could take `contact-solve` for the
-  pluck and fret buzz. Its moving bridge and sympathetic strings are
-  built (§Fretwire). Rhodes could become a struck tine-and-tonebar mode
-  pair with an implicit hammer.
+- **Fretwire and Rhodes.** Fretwire's frets are one point; a slap could
+  use the whole fingerboard, and the fingered decay is still a first-order
+  shelf where the measured bass's low partials ring 2 to 3 times longer.
+  Rhodes has no hammer or tonebar yet: a struck tine-and-tonebar pair
+  would give the attack thud the recording has.
 - **Lane mode.** Splitting the render into a lane-eligible word, or
   raising the stash limit, would roughly halve the cost.
 - **Sympathetic strings in the Grand.** Fretwire's open strings show the

@@ -46,9 +46,9 @@ include "../lib/manifest.fy"
   StringParams.c-tone 4.7e-08 const-f64
   520.0 panel-w!
 
-  "STRING" "DECAY"   "bs-decay"   StringParams.decay    0.3 40.0 12.0 curve-exp knob
-  "STRING" "HF DEC"  "bs-hfdec"   StringParams.hf-decay 0.05 10.0 1.2 curve-exp knob
-  "STRING" "KNEE"    "bs-knee"    StringParams.knee     1.0 32.0 9.0  curve-exp knob
+  "STRING" "DECAY"   "bs-decay"   StringParams.decay    0.3 40.0 19.0 curve-exp knob
+  "STRING" "HF DEC"  "bs-hfdec"   StringParams.hf-decay 0.05 10.0 0.27 curve-exp knob
+  "STRING" "KNEE"    "bs-knee"    StringParams.knee     1.0 32.0 24.0 curve-exp knob
   "STRING" "STIFF"   "bs-stiff"   StringParams.stiff    0.0 10.0 4.0  curve-lin knob
   "STRING" "RELEASE" "bs-release" StringParams.release  0.02 2.0 0.12 curve-exp knob
   "STRING" 3 strip
@@ -58,6 +58,7 @@ include "../lib/manifest.fy"
   "PLUCK" "SHAPE"  "bs-shape"  StringParams.shape  0.0 1.0 0.0   curve-lin knob
   "PLUCK" "NOISE"  "bs-noise"  StringParams.noise  0.0 1.0 0.15  curve-pow knob
   "PLUCK" "HAND" "bs-hand"   StringParams.hand   0.0 12.0 5.0  curve-lin knob
+  "PLUCK" "SLAP"  "bs-slap"   StringParams.slap   0.0 1.0 0.0   curve-lin knob
   "PLUCK" 3 strip
 
   "PICKUPS" "NECK"  "bs-pickup" StringParams.pickup 0.04 0.5 0.2   curve-lin knob

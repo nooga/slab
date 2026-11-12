@@ -577,9 +577,9 @@ Presets:
 
 | param | section | label | range | default | notes |
 |---|---|---|---|---|---|
-| `bs-decay` | STRING | DECAY | 0.3 … 40 | 12 | exp |
-| `bs-hfdec` | STRING | HF DEC | 0.05 … 10 | 1.2 | exp |
-| `bs-knee` | STRING | KNEE | 1 … 32 | 9 | exp |
+| `bs-decay` | STRING | DECAY | 0.3 … 40 | 19 | exp |
+| `bs-hfdec` | STRING | HF DEC | 0.05 … 10 | 0.27 | exp |
+| `bs-knee` | STRING | KNEE | 1 … 32 | 24 | exp |
 | `bs-stiff` | STRING | STIFF | 0 … 10 | 4 | linear |
 | `bs-release` | STRING | RELEASE | 0.02 … 2 | 0.12 | exp |
 | `bs-pos` | PLUCK | POS | 0.04 … 0.5 | 0.14 | linear |
@@ -587,6 +587,7 @@ Presets:
 | `bs-shape` | PLUCK | SHAPE | 0 … 1 | 0 | linear |
 | `bs-noise` | PLUCK | NOISE | 0 … 1 | 0.15 | pow |
 | `bs-hand` | PLUCK | HAND | 0 … 12 | 5 | linear |
+| `bs-slap` | PLUCK | SLAP | 0 … 1 | 0 | linear |
 | `bs-pickup` | PICKUPS | NECK | 0.04 … 0.5 | 0.2 | linear |
 | `bs-pickup-b` | PICKUPS | BRIDGE | 0.04 … 0.5 | 0.1 | linear |
 | `bs-sel` | PICKUPS | SELECT | 0 NECK / 1 BOTH / 2 BRIDGE / 3 OUT | 0 | switch |
@@ -621,8 +622,9 @@ Presets:
 - `p-bass` — A split-coil P-type pickup, roundwounds, tone a little back: the punchy middle of a mix
 - `palm-mute` — Muted with the palm: a short pick thud
 - `pick` — Played with a pick near the bridge: bright attack, click, rounder sustain
-- `pop` — Popped string over a bridge humbucker: pulled and snapped, hard push, buzz
-- `slap` — Thumb slap over the end of the neck, a bridge humbucker: narrow strike, fret rattle, bright
+- `pop` — Every note popped: pulled from under and let go against the frets, both single coils
+- `slap` — Slap, both single coils: the thumb on the low strings, the upper two popped (E2 and up at this HAND). Velocity is how hard the string meets the fret
+- `thumb` — Every note thumbed, both single coils: SLAP with the hand high so nothing is popped
 
 ## concoction
 
