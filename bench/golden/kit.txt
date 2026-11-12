@@ -1,2 +1,2 @@
 # bench goldens for kit: case sha256(f32 L ++ f32 R) [nonharm_db thd_db]
-hits 7deadce04bd5313d21b102b1bc471057214b193fc9aac810353e65128ec5c598
+hits 157c4929b9038b01bd668843bedbffdca34c52ca8fe062fcc718d90f0ed32362

@@ -1,0 +1,13 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "zitherfx",
+  "note": "Insert after a synth or voice: the open-D strings that agree with a note answer it",
+  "params": {
+    "zi-tuning": 0,
+    "zi-ring": 10,
+    "zi-tone": 0.5,
+    "zi-coil": 0.7,
+    "zi-mix": 0.35
+  }
+}

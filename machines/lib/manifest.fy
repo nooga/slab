@@ -101,7 +101,13 @@ struct: MachineDesc
   ptr voice-level    ( int: state byte offset + 1 of an f64 a voice keeps at
                        its own level, which idling watches as well as its
                        output; 0 = output only [docs/04 §Shared state] )
+  ptr gated          ( GatedDesc chain or 0 - more render words over the
+                       shared region, each asleep until its gate is set
+                       [docs/04 §Shared state, gated words] )
 ;
+( a gated shared word: its dsp word and the shared-region byte offset of
+  its gate f64 )
+struct: GatedDesc  ptr next  ptr word  ptr gate ;
 
 struct: ControlDesc
   ptr next
@@ -159,6 +165,7 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
 :: _mf-last-buf   8 alloc ;
 :: _mf-last-asset 8 alloc ;
 :: _mf-last-mod   8 alloc ;
+:: _mf-last-gated 8 alloc ;
 
 : _mf-md@ _mf-md @64 ;
 
@@ -188,6 +195,7 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   0 _mf-last-buf !64
   0 _mf-last-asset !64
   0 _mf-last-mod !64
+  0 _mf-last-gated !64
 ;
 
 : render!        ( str -- ) cstr-new _mf-md@ MachineDesc.render! drop ;
@@ -256,6 +264,26 @@ struct: AssetDesc   ptr next  ptr name  ptr ptr-offset  ptr len-offset  ptr sr-o
   block - for voices whose sound reaches the output through a shared
   word rather than their own io [docs/04 §Shared state] )
 : voice-level!  ( offset -- )  1 + _mf-md@ MachineDesc.voice-level! drop ;
+( n shared-period! : the step, in samples, in which voices and the shared
+  words alternate, for a machine with gated words and no `shared!` word )
+: shared-period!  ( n -- )  _mf-md@ MachineDesc.shared-period! drop ;
+( "word" offset shared-gated! : one more render word over the shared
+  region [io ctx shared params --], up to four.  It sleeps until some
+  entry word [a note hook, usually] writes a nonzero f64 at `offset` in
+  the shared region; the host then clears that gate, runs the word every
+  step, and puts it back to sleep after a block in which what it added
+  to io stayed under the idle floor.  For a machine with several bodies
+  that ring at different times, so only the ones sounding cost anything )
+: shared-gated!  ( str offset -- )
+  GatedDesc.alloc
+  GatedDesc.gate!
+  swap cstr-new swap GatedDesc.word!
+  _mf-last-gated @64 0 =
+  [ dup _mf-md@ MachineDesc.gated! drop ]
+  [ dup _mf-last-gated @64 GatedDesc.next! drop ]
+  ifte
+  _mf-last-gated !64
+;
 : render-lite!  ( str offset -- )
   _mf-md@ MachineDesc.render-lite-sel! drop
   cstr-new _mf-md@ MachineDesc.render-lite! drop ;

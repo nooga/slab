@@ -1,0 +1,15 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "zither",
+  "note": "No discs: a plain plucked zither on the minor tuning, long ring",
+  "params": {
+    "zi-tuning": 1,
+    "zi-ring": 10,
+    "zi-tone": 0.55,
+    "zi-pluck": 0.3,
+    "zi-damp": 0,
+    "zi-a-on": 0,
+    "zi-b-on": 0
+  }
+}

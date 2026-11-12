@@ -66,8 +66,9 @@ once a third machine needs it:
   quartic potential, so the coupling only moves energy between modes.
   Its stiffness is capped so the explicit step stays stable.
 - **Diffuse-field energy store.** The modes too dense to simulate are one
-  energy reservoir fed by the discrete modes and radiated as band noise:
-  statistical energy analysis (Lyon 1975).
+  energy reservoir radiated as band noise: statistical energy analysis
+  (Lyon 1975). In the kit it is fed by the strike, not by the ringing
+  modes (see below).
 - **Lumped collision rattle.** A mass on a spring that collides with a
   body through `contact-solve`. Its collision force, times noise, drives a
   wide resonant bank. This is the snare wires.
@@ -137,25 +138,85 @@ The lower note of each tom pair, and the second kick, sit a little lower
 
 - **Heads** use the Bessel ratios, compressed slightly (ratio^0.94) as
   air loading does to a real drum. They are struck at a radius where
-  `J_m(j_mn r)` sets each mode's drive. Loss is `σ = s0 + s1 f²` through
-  two T60s.
+  `J_m(j_mn r)` sets each mode's drive. A head's overtones die faster
+  than its fundamental, `σ = σ_a (f/f0)^g`: g is 1.6 for the damped kick,
+  1.3 for toms, 1 for the snare. (Until 2026-11-11 the loss was
+  `s0 + s1 f²` through T60s at f0 and 3 kHz, which left every overtone
+  under 1 kHz ringing as long as the fundamental: drums like timpani.)
 - **Tension modulation.** The gain is `G = 150/c²` per ply (c is the
   head's wave speed). That follows from the Mylar's elastic stiffness
   against its tension: at 1 mm of excursion a snare head runs 2–3 %
   sharp. GLIDE scales it.
 - **Strikers.** A hickory stick is a Hertz contact, `K = 4/3 E* √R`:
   4.4e8 on Mylar, 1.2e9 on bronze. The kick beater is felt. The stick's
-  impact force, high-passed at about 1 kHz, adds the click.
+  impact force, high-passed twice at about 1 kHz, adds the click. The
+  kick's beater slap is a 15 ms burst of noise above 1.5 kHz, about
+  30 dB under the body.
 - **Snare wires.** A 4 g lumped mass on a 100 Hz spring, resting a hair
   under the head center. WIRES sets the gap. Collisions drive eight wide
-  buzz modes from 2.1 to 7.6 kHz.
-- **Plates.** 40 modes on a stretched, jittered series
-  `((i + 1.2)/1.2)^1.17`. Strike weights fall as ratio^−0.7. A bounded
-  cubic coupling (BLOOM) moves energy between them, and a diffuse field
-  takes over the upper modes' energy as band noise: 1.8–4 kHz high-pass,
-  6.5 kHz two-pole low-pass.
+  buzz modes from 2.1 kHz up, and the strands go on shaking after a
+  collision (T60 0.2 s × the snare's DECAY), which is the snare's tail:
+  the level of the last collision, decaying, drives the buzz modes with
+  noise and adds plain noise between them.
+- **Fitted to recordings (2026-11-11).** The kit is tuned against the
+  VCSL library's real suspended cymbal, hi-hat, snare (wires on and off)
+  and toms, by comparing band levels over time (five bands, six windows
+  to 3.5 s, relative to the peak). What that showed, against the
+  guesses before it: a cymbal's spectrum is flat per Hz from 150 Hz to
+  20 kHz at the hit; its lows ring for many seconds while the top falls
+  20 dB in 300 ms (`σ = s0 + s1 f²`, T60 8–12 s at the lowest mode,
+  1.4–1.8 s at 8 kHz); a hi-hat decays at nearly one rate across the
+  band (0.6 s closed, 3 s open); a snare's wires hold the 1–8 kHz band
+  for about 100 ms, 18 dB under the body; a tom's overtone band is as
+  loud as its fundamental at the hit.
+- **Stick on a head.** The 40 modes kept are too few to carry the local
+  give of a membrane under a stick, so with the Hertz stiffness the
+  stick left in two samples and chattered: a full-height click and a
+  body ten times quieter. That compliance is now in the contact
+  (K = 10^6.3–6.5 for toms and snare), which lasts about a millisecond.
+- **Cymbals (since 2026-11-11).** Three plates, hats, crash and ride,
+  live in the machine's shared region and persist between hits: a second
+  hit adds to a plate that is still ringing, and closing the hats is
+  damping written onto the same plate, which is the choke. Each is 160
+  modes at constant density from its lowest mode (380, 170, 230 Hz) to
+  13.5–15 kHz, each mode placed at random in its own cell, as exact
+  rotations with loss `σ = s0 + s1 f²` through T60s at the lowest
+  mode and at 8 kHz. A hit is a raised-cosine force pulse, two samples
+  at full velocity and up to 0.1 ms longer when soft (STICK scales it),
+  so the attack is flat to 20 kHz. Modes run to 19 kHz; those above
+  8 kHz stay off the springs, because near Nyquist the explicit kick
+  resonates with the step and gains energy. The
+  nonlinearity is four springs per plate: mode i hangs on spring
+  i mod 4, a spring's coordinate is `u = Σ a_i q_i` and its force
+  `g(u) = G u0 x²(β + x)/(1 + x²)`, `x = u/u0`. It is quadratic then
+  cubic, as a shallow shell's is, has a potential (so it only moves
+  energy between modes) and a bounded slope (so the explicit kick is
+  stable; G = 30 at 48 kHz, 60 is not). The products of the low modes
+  drive the high ones: a hard crash's top octave rises about 6 dB over
+  the first 20–100 ms, a soft one's less. BLOOM scales G, and past 1
+  lowers u0. This reduced coupling stands in for the von Kármán plate,
+  which needs some 800 modes at 100 kHz (Ducceschi & Touzé 2015; Nguyen
+  & Touzé 2019); a single shared cubic term, as before, is a Berger-type
+  model, which glides but does not cascade (Bilbao et al. 2023). There
+  is no noise source in the cymbals. The plates were prototyped in numpy
+  first. Each plate has its own gated shared word (docs/04), so it costs
+  nothing until hit; a ringing plate is about 1.5 µs per sample.
+- **Plates, the old per-voice model (unused for cymbals now).** 40 modes on a stretched, jittered series
+  `((i + 1.2)/1.2)^1.17`. Strike weights go as ratio^t: t is +0.7 for
+  hats, −0.35 crash, −0.2 ride, −0.7 bell. A bounded cubic coupling
+  (BLOOM) moves energy between them. The diffuse field is band noise,
+  1.8–4 kHz high-pass and 8.5 kHz two-pole low-pass, kept well under the
+  modes (a first pass had it louder and longer, which read as hiss). The stick's kinetic
+  energy passes into it over the piece's bloom time (2 ms closed hat,
+  4 ms open, 20 ms crash, 30 ms ride) and it decays at the piece's
+  high-frequency T60, so a cymbal is brightest just after the hit.
+  (Before, the field was fed continuously by the modes' strain energy:
+  it swelled over a second with no attack and lasted as long as the
+  lowest partial.) The diffuse field and the kick's noise slap are
+  switched off. The wires' tail is back, set from the recorded snare
+  and rolled off at 4.5 kHz.
 
-**Cost:** about 530 ns per sample in Debug for the bench hit sequence.
+**Cost:** about 480 ns per sample in Debug for the bench hit sequence.
 The render word, like the piano's, renders without NEON lanes.
 
 ## Fretwire: pickups, wiring and bodies
@@ -248,6 +309,40 @@ measurements in shape, not any one instrument (our own estimates).
   on it. A string a note is played on is muted. The strings are heard
   through the pickups and the body.
 
+### Frets: buzz, slap and pop
+
+BUZZ puts the frets in reach. The string's displacement over the last
+fret (0.3 of the open string from the bridge) is the running sum of its
+velocity there: this sample's loop write less the wave that passed that
+point one comb delay earlier. It cannot pass the gap. What would carry it
+past is taken out of the wave leaving the fret one way and put into the
+wave leaving the other, the same amount in both, so a knock can reflect
+or lose energy and never add it. BUZZ 0 is off (and bit-exact with the
+kernel before); raising it closes the gap from 4.5% to 1% of a period of
+summed velocity, where a hard finger pluck swings about 3%.
+
+- **SLAP** is a thumb. The pulse is up to twice a finger's speed and
+  stops when it has carried the string to the fret (0.5 to 1.1 gaps, by
+  velocity), over about 70 µs. That stop is the click; velocity sets how
+  fast the string gets there, so how bright.
+- **A pop** is a pluck (SHAPE 1) from the far side, pulled 0.4 to 9.4
+  gaps by velocity squared, which meets the frets half a period after it
+  is let go and rattles until it has lost enough.
+- With SLAP up, a note on the upper half of the strings is popped and
+  the rest are thumbed. HAND decides the string, so it decides the split:
+  the `slap` preset (HAND 1.5) thumbs up to D#2 and pops from E2.
+
+Measured against solo slap recordings (three, CC0 and CC-BY, lossy, with
+their own EQ): a real slap's content above 2 kHz arrives in a burst 4 to
+6 ms wide that returns once a period and falls about 10 dB over three
+periods, and 3 to 8 kHz falls about 18 dB in the first 150 ms. The limiter
+this replaces had its highs 15 dB lower and gone in 200 ms. The model now
+has the bursts and the fall (thumbed E1, 3 to 8 kHz: −26, −30, −39 dB re
+peak at 6 to 20, 20 to 60 and 60 to 200 ms; the recording −25, −34, −43).
+Not matched: the recordings' scooped mids (theirs is 10 dB lower at 150
+to 800 Hz, likely EQ), and nothing here has been fitted to a clean DI
+slap note, because none was to hand.
+
 ### Fitted against recordings
 
 `tools/fit/string_fit.py` measures the attack spectrum (harmonics 1-16,
@@ -264,11 +359,60 @@ ours keeps the pluck's and pickups' comb notches. The bass reference
 shows them (its 5th harmonic is 30 dB down), so they are real. But a pick
 and two pickups fill them in more than the model does.
 
+The fingered roundwound decay (`default`, `p-bass`, `fingers-bridge`,
+`pick`, and the knobs' defaults) is fitted to Karoryfer Fashionbass at
+F1, D2 and D3: DECAY 19 s, HF DEC 0.27 s, KNEE 24. With the knee that
+high the shelf's loss rises as the harmonic number squared across the
+whole audible range, which is how the recording decays. T60 in seconds,
+model / recording, at D2: harmonic 1 16 / 19, 4 6.0 / 6.6, 8 2.0 / 3.9,
+12 1.3 / 1.3, 16 0.8 / 0.8, 20 0.6 / 0.5. The old values (12, 1.2, 9)
+had harmonics 3 to 8 ringing a third to half as long as the recording
+and those above 12 twice as long. Not matched: the recording's
+harmonic-to-harmonic scatter (its 2nd rings 5 s between a 19 s 1st and a
+21 s 3rd), and its attack has no notch as deep as the model's pluck comb.
+
 ### Cost
 
 The shared body makes the strings render in lockstep, one voice at a
 time. In ReleaseFast the guitar's chord case went from 176 to 480 ns per
 sample (2.3% of a core). SYMP adds about 100 ns while it is up.
+
+## Rhodes E-Piano: the pickup, fitted
+
+The voice (`kernels/06-voices/rhodes.fy`) is a sine tine in front of a
+pickup whose flux is 1 / (1 + (x − off)²); the output is its rate of
+change. That law was checked against a sampled 1977 Mark I Stage 73
+(jRhodes3d, direct from the harp, five velocity layers, 15 keys): for each
+key and layer, the swing and offset that best explain harmonics 1 to 8.
+It fits to 1 to 2.5 dB almost everywhere, with one offset per key and a
+swing that rises layer by layer, so the law stays and the numbers change:
+
+- **Swing.** At full velocity the tine swings 2.3 pickup widths at D3,
+  4 to 5 in the bottom octave and 0.4 at E5: (D3 / f)^1.15, held at
+  twice D3's. The old voice swung 0.7 at every key, so it never barked:
+  a hard real note has its 2nd harmonic 16 dB over the fundamental and a
+  series to the 9th. DRIVE is the swing at D3 (0.6 to 4.2, 0.5 is the
+  measured piano); the output is divided by the key's share, and the
+  keys stay level within 1.5 dB.
+- **Touch.** The softest layer swings 0.13 to 0.2 of the hardest, which
+  velocity^1.4 already gives. The recording shows no extra attack
+  brightness beyond the swing, so BARK is near 0 in the presets.
+- **Offset.** 0.35 to 1.0 from key to key. VOICING sets the middle and
+  each key gets its own within ±0.125.
+- **Decay.** T60 of the fundamental is 35 to 40 s in the bottom octave,
+  24 s at D3, 14 s at B4, 9 s at D6: (C3 / f)^0.5, and faster again above
+  1.7 kHz (1.7 s at C7). DECAY 0.5 is the measured piano.
+- **The tine's second mode** is at 7.35 times the fundamental, 38 dB
+  under it. The old ping was at 6.27 and 30 dB louder, the loudest thing
+  in a soft note. BELL 0.36 is the measured level; BELL 1 is 12 dB under
+  the fundamental, for effect.
+- CHORUS (two fundamentals beating) is 0 in the presets: a tine has one.
+
+Not modeled: a low thud in the first 40 ms of the recording (a 60 to
+100 Hz mode, heard as sidebands 30 dB down), the hammer tip's change of
+hardness across the keyboard, the damper's felt, and the author's EQ
+(a treble boost and low-mid scoop, so absolute tilt was not fitted).
+`songs/rhodes_demo.py` plays one progression at three velocities.
 
 ## Presets
 
@@ -278,15 +422,17 @@ sample (2.3% of a core). SYMP adds about 100 ns while it is up.
 - `guitar` (new or reworked here): twin-humbucker, p90-crunch,
   semi-hollow, out-of-phase, acoustic; jazz is now a hollow archtop on
   the neck humbucker, funk the middle and bridge single coils together.
-- `bass`: jazz-both, p-bass, hollow, acoustic; pop and slap are on a
-  bridge humbucker.
+- `bass`: jazz-both, p-bass, hollow, acoustic; `slap` (thumb and pop
+  from one track), `thumb` and `pop` are on both single coils with the
+  pickup's peak up.
 
 ## Next
 
-- **Fretwire and Rhodes.** Fretwire could take `contact-solve` for the
-  pluck and fret buzz. Its moving bridge and sympathetic strings are
-  built (§Fretwire). Rhodes could become a struck tine-and-tonebar mode
-  pair with an implicit hammer.
+- **Fretwire and Rhodes.** Fretwire's frets are one point; a slap could
+  use the whole fingerboard, and the fingered decay is still a first-order
+  shelf where the measured bass's low partials ring 2 to 3 times longer.
+  Rhodes has no hammer or tonebar yet: a struck tine-and-tonebar pair
+  would give the attack thud the recording has.
 - **Lane mode.** Splitting the render into a lane-eligible word, or
   raising the stash limit, would roughly halve the cost.
 - **Sympathetic strings in the Grand.** Fretwire's open strings show the

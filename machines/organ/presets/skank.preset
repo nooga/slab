@@ -1,0 +1,20 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "organ",
+  "note": "Short offbeat chords: bright click, no vibrato",
+  "params": {
+    "or-d16": 0,
+    "or-d513": 0,
+    "or-d8": 8,
+    "or-d4": 8,
+    "or-d223": 0,
+    "or-d2": 0,
+    "or-d135": 0,
+    "or-d113": 0,
+    "or-d1": 0,
+    "or-click": 0.85,
+    "or-leak": 0.4,
+    "or-volume": 3
+  }
+}

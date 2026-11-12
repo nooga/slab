@@ -1,0 +1,9 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "rotary",
+  "note": "Fast rotors",
+  "params": {
+    "ro-speed": 2
+  }
+}

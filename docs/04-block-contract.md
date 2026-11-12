@@ -504,6 +504,21 @@ zeroes them, passes the pointer, and orders the calls.
   note-on and runs while a voice sounds; once none does, it sleeps after
   a block whose own output stayed under `IDLE_FLOOR`, until the next
   note-on. Its output counts as the machine's for idle skipping.
+- A machine that declares `-1.0 tail!` runs its shared word from the
+  first block and never lets it sleep: something that sounds with no
+  note held, such as the Magnet Zither's discs (docs/35).
+- **Gated words.** `"word" offset shared-gated!` declares one more render
+  word over the region, up to four, with or without a `shared!` word
+  (`n shared-period!` sets the step when there is none). Each sleeps
+  until an entry word, usually a note hook, writes a nonzero f64 at
+  `offset` in the region. The host then clears that gate, runs the word
+  every step after the voices, and puts it back to sleep after a block
+  in which what it added to io stayed under `IDLE_FLOOR`. This is for a
+  machine with several bodies that ring at different times: the Skinwork
+  Kit's three cymbal plates (docs/41) each cost nothing until hit. A
+  `dsp:` word cannot do this itself: an `ifte` on state the word writes
+  if-converts, and one inside a `call:` stage always does (docs/05
+  §Branching).
 
 The fixture `machines/raw_fixtures/shared_body.fy` and the test "shared
 state: voices and the shared word alternate per step" show the order.

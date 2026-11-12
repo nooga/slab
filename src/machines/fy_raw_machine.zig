@@ -396,6 +396,12 @@ pub const FyRawMachine = struct {
     shared_caller: ?RawCaller = null,
     shared_awake: bool = false,
     shared_peak: f64 = 0,
+    // Gated shared words (manifest `shared-gated!`): each sleeps until its
+    // gate f64 in the shared region is set, and again once it goes quiet.
+    gated_slots: [machine_desc.MAX_GATED]RawSlots = @splat(.{}),
+    gated_caller: [machine_desc.MAX_GATED]?RawCaller = @splat(null),
+    gated_awake: [machine_desc.MAX_GATED]bool = @splat(false),
+    gated_peak: [machine_desc.MAX_GATED]f64 = @splat(0),
     params_buf: [MAX_PARAMS]u8 align(8) = @splat(0),
     io: [MAX_BLOCK]IoFrame = @splat(.{}),
     kctx: KernelCtx = .{},
@@ -1335,6 +1341,10 @@ pub const FyRawMachine = struct {
         self.render_caller = try self.compileEntry(self.desc.renderWord(), &self.render_slots, true);
         if (self.desc.renderLiteWord()) |w| self.render_lite_caller = try self.compileEntry(w, &self.render_lite_slots, true);
         if (self.desc.sharedWord()) |w| self.shared_caller = try self.compileEntry(w, &self.shared_slots, true);
+        for (0..self.desc.gated_count) |k| {
+            const w = self.desc.gated_word[k][0..self.desc.gated_word_len[k]];
+            self.gated_caller[k] = try self.compileEntry(w, &self.gated_slots[k], true);
+        }
         // Poly voices pair up whatever their output; effects need one pass
         // per channel to pair (a stereo effect already runs once). Voices
         // that act on a shared region render one at a time, in voice order.
@@ -1553,6 +1563,12 @@ pub const FyRawMachine = struct {
         // stayed under the floor all block.
         if (!any and self.shared_peak < IDLE_FLOOR) self.shared_awake = false;
         self.shared_peak = 0;
+        // A gated word sleeps after a block under the floor, whatever the
+        // voices are doing: its gate wakes it.
+        for (0..self.desc.gated_count) |k| {
+            if (self.gated_peak[k] < IDLE_FLOOR) self.gated_awake[k] = false;
+            self.gated_peak[k] = 0;
+        }
     }
 
     /// True if any knob's smoothed position differs from its target.
@@ -2841,23 +2857,41 @@ fn renderVoiceSample(self: *FyRawMachine, ctx: *const machine.MachineCtx, l: []f
 
 fn renderVoiceSegment(self: *FyRawMachine, start: usize, end: usize) !void {
     if (end <= start) return;
-    if (self.shared_caller == null) return renderVoices(self, start, end);
-    // Shared state (docs/04): the voices, then the shared word, in steps
+    const gated = self.desc.gated_count;
+    if (self.shared_caller == null and gated == 0) return renderVoices(self, start, end);
+    // A gate set since the last segment (by a note hook) wakes its word;
+    // the host takes the gate down.
+    var any_gated = false;
+    for (0..gated) |k| {
+        const gate: *align(1) f64 = @ptrCast(self.shared_mem.ptr + self.desc.gated_gate[k]);
+        if (gate.* != 0) {
+            gate.* = 0;
+            self.gated_awake[k] = true;
+        }
+        any_gated = any_gated or self.gated_awake[k];
+    }
+    // Shared state (docs/04): the voices, then the shared words, in steps
     // of shared_period samples.
-    if (!self.shared_awake) return renderVoices(self, start, end);
+    // A machine that never idles (`-1.0 tail!`) runs its shared word from
+    // the first block: a drone that needs no note.
+    const main = self.shared_caller != null and (self.shared_awake or self.desc.tail_s < 0);
+    if (!main and !any_gated) return renderVoices(self, start, end);
     const period = self.desc.shared_period;
     var at = start;
     while (at < end) {
         const n = @min(period, end - at);
         try renderVoices(self, at, at + n);
-        try renderShared(self, at, at + n);
+        if (main) try renderShared(self, &self.shared_caller.?, &self.shared_peak, at, at + n);
+        for (0..gated) |k| {
+            if (self.gated_awake[k]) try renderShared(self, &self.gated_caller[k].?, &self.gated_peak[k], at, at + n);
+        }
         at += n;
     }
 }
 
 /// The shared word over io[start, end), accumulating like a voice; its
 /// contribution is what keeps it awake.
-fn renderShared(self: *FyRawMachine, start: usize, end: usize) !void {
+fn renderShared(self: *FyRawMachine, caller: *RawCaller, peak: *f64, start: usize, end: usize) !void {
     const io = self.io[start..end];
     const snap = self.voice_snap[0..io.len];
     for (snap, io) |*d, f| d.* = f.out_l;
@@ -2871,10 +2905,10 @@ fn renderShared(self: *FyRawMachine, start: usize, end: usize) !void {
         .{ .ptr = @intFromPtr(&io[0]) },          .{ .ptr = @intFromPtr(&self.kctx) },
         .{ .ptr = @intFromPtr(self.shared_mem.ptr) }, .{ .ptr = self.paramsPtr() },
     };
-    _ = try self.shared_caller.?.callRealtime(@intCast(io.len), &args);
-    var pk = self.shared_peak;
+    _ = try caller.callRealtime(@intCast(io.len), &args);
+    var pk = peak.*;
     for (snap, io) |b, f| pk = @max(pk, @abs(f.out_l - b));
-    self.shared_peak = pk;
+    peak.* = pk;
 }
 
 fn renderVoices(self: *FyRawMachine, start: usize, end: usize) !void {
@@ -3497,6 +3531,8 @@ fn resetImpl(state: *anyopaque) void {
     if (self.conv_audio) |cv| cv.reset();
     self.shared_awake = false;
     self.shared_peak = 0;
+    self.gated_awake = @splat(false);
+    self.gated_peak = @splat(0);
     @memset(self.voice_gate[0..], false);
     @memset(self.voice_pitch[0..], -1);
     @memset(self.voice_note_id[0..], -1);
@@ -7445,6 +7481,31 @@ test "shared state: voices and the shared word alternate per step, then the word
     try testing.expect(!inst.shared_awake); // under the floor all block
     testRender(mach, &ctx, &l, &r);
     for (l) |s| try testing.expectEqual(@as(f32, 0), s);
+}
+
+test "shared state: a machine that never idles runs its shared word with no note" {
+    const block = 256;
+    const inst = try FyRawMachine.create(testing.allocator, "machines/zither/zither.fy");
+    const mach = inst.machineInterface();
+    defer mach.deinit.?(mach.state, testing.allocator);
+    try testing.expect(inst.shared_caller != null);
+    try testing.expect(inst.desc.tail_s < 0);
+    var ctx = std.mem.zeroes(machine.MachineCtx);
+    ctx.sample_rate = 48_000;
+    ctx.block_size = block;
+    var l: [block]f32 = @splat(0);
+    var r: [block]f32 = @splat(0);
+    // No disc, no note: silence, though the shared word runs.
+    for (0..4) |_| testRender(mach, &ctx, &l, &r);
+    for (l) |s| try testing.expectEqual(@as(f32, 0), s);
+    // A disc ON drives the strings before any note-on (docs/35).
+    inst.setControlNormSnap(controlIndexById(inst, "zi-a-on").?, 1);
+    var peak: f32 = 0;
+    for (0..40) |_| {
+        testRender(mach, &ctx, &l, &r);
+        for (l) |s| peak = @max(peak, @abs(s));
+    }
+    try testing.expect(peak > 1e-3);
 }
 
 test "shared state: the shared word sees each step's sample clock; voice-level! keeps a silent voice awake" {
