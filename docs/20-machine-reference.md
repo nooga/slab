@@ -1705,10 +1705,10 @@ Presets:
 
 Presets:
 
-- `bright` — Bright barky Rhodes - hard hammer, hot pickup
-- `default` — Classic Rhodes e-piano - balanced tine and tone bar
-- `mellow` — Mellow warm Rhodes - soft hammer, dark tone, long sustain
-- `tine-bell` — Bell tine - high Q tine, subtle bar, long ringing sustain
+- `bright` — Tines close to the pickups, bright amp: barks early
+- `default` — A 1977 Mark I, direct: fitted to a sampled piano. Soft is round, hard barks
+- `mellow` — Tines backed off, dark amp: round at any touch
+- `tine-bell` — The tine's ping pushed far past the real thing, over a clean note
 
 ## sampler
 

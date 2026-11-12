@@ -6,6 +6,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Rhodes E-Piano barks.** The pickup is refitted to a sampled 1977
+  Mark I: hard notes swing past the pickup and growl, most in the bass,
+  soft ones stay round, the bell ping is as faint as the real one, and
+  notes ring as long as the instrument's. All four presets are redone.
+  DRIVE and BELL mean something different now, so saved Rhodes parts sound
+  different.
 - **Fretwire slaps.** BUZZ is now the frets themselves: a string that
   swings far enough hits the last fret and rattles. A new SLAP knob is a
   thumb that drives the string onto the fret, and the `slap` preset plays

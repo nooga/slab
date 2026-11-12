@@ -377,6 +377,43 @@ The shared body makes the strings render in lockstep, one voice at a
 time. In ReleaseFast the guitar's chord case went from 176 to 480 ns per
 sample (2.3% of a core). SYMP adds about 100 ns while it is up.
 
+## Rhodes E-Piano: the pickup, fitted
+
+The voice (`kernels/06-voices/rhodes.fy`) is a sine tine in front of a
+pickup whose flux is 1 / (1 + (x − off)²); the output is its rate of
+change. That law was checked against a sampled 1977 Mark I Stage 73
+(jRhodes3d, direct from the harp, five velocity layers, 15 keys): for each
+key and layer, the swing and offset that best explain harmonics 1 to 8.
+It fits to 1 to 2.5 dB almost everywhere, with one offset per key and a
+swing that rises layer by layer, so the law stays and the numbers change:
+
+- **Swing.** At full velocity the tine swings 2.3 pickup widths at D3,
+  4 to 5 in the bottom octave and 0.4 at E5: (D3 / f)^1.15, held at
+  twice D3's. The old voice swung 0.7 at every key, so it never barked:
+  a hard real note has its 2nd harmonic 16 dB over the fundamental and a
+  series to the 9th. DRIVE is the swing at D3 (0.6 to 4.2, 0.5 is the
+  measured piano); the output is divided by the key's share, and the
+  keys stay level within 1.5 dB.
+- **Touch.** The softest layer swings 0.13 to 0.2 of the hardest, which
+  velocity^1.4 already gives. The recording shows no extra attack
+  brightness beyond the swing, so BARK is near 0 in the presets.
+- **Offset.** 0.35 to 1.0 from key to key. VOICING sets the middle and
+  each key gets its own within ±0.125.
+- **Decay.** T60 of the fundamental is 35 to 40 s in the bottom octave,
+  24 s at D3, 14 s at B4, 9 s at D6: (C3 / f)^0.5, and faster again above
+  1.7 kHz (1.7 s at C7). DECAY 0.5 is the measured piano.
+- **The tine's second mode** is at 7.35 times the fundamental, 38 dB
+  under it. The old ping was at 6.27 and 30 dB louder, the loudest thing
+  in a soft note. BELL 0.36 is the measured level; BELL 1 is 12 dB under
+  the fundamental, for effect.
+- CHORUS (two fundamentals beating) is 0 in the presets: a tine has one.
+
+Not modeled: a low thud in the first 40 ms of the recording (a 60 to
+100 Hz mode, heard as sidebands 30 dB down), the hammer tip's change of
+hardness across the keyboard, the damper's felt, and the author's EQ
+(a treble boost and low-mid scoop, so absolute tilt was not fitted).
+`songs/rhodes_demo.py` plays one progression at three velocities.
+
 ## Presets
 
 - `grand`: default, bright-pop, felt-ballad, honky-tonk, sustain-wash,

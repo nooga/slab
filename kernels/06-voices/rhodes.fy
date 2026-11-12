@@ -4,15 +4,20 @@
   electromagnetic pickup, not from the tine's spectrum alone:
 
     * The struck TINE [plus its tonebar] rings as a few modes: two close
-      fundamentals that beat slightly [CHORUS], and the clamped-free bar's
-      inharmonic 6.267x partial - a short metallic ping on the attack [BELL,
-      SNAP].  Decay follows pitch: bass notes ring, top notes die sooner.
+      fundamentals that can beat [CHORUS; a real tine doesn't], and the
+      tine's second mode at 7.35x - a faint metallic ping on the attack
+      [BELL, SNAP].  Decay follows pitch: bass notes ring, top notes die
+      sooner.
 
     * The PICKUP sees flux Phi = 1/[1 + [x - off]^2] of the tine displacement
       x, and its coil outputs dPhi/dt.  Soft strikes keep x small, so the
       output is a fundamental proportional to the offset plus a clean 2nd
       harmonic - mellow.  Hard strikes [displacement ~ vel^1.4, DRIVE] swing
-      into the curved part of Phi and the harmonics bloom - bark.  VOICING
+      past the axis and back, two pulses a cycle: the 2nd harmonic passes
+      the fundamental and the series runs to the 9th - bark.  This flux
+      law fits a sampled 1977 Mark I's first eight harmonics within about
+      2 dB at every velocity layer [docs/41], with a swing of 2.3 pickup
+      widths at D3 full velocity, 4 or more in the bass and 0.4 at E5.  VOICING
       moves the tine off the pickup axis: toward the axis is bell-like [even
       harmonics], away from it round and fundamental-heavy.  A derivative has
       no DC, so there is no DC blocker and no thump.
@@ -34,6 +39,14 @@ include "../05-drums/noise.fy"          ( noise-step — hammer chiff )
 include "../02-shapers/rational.fy"   ( tanh-rational )
 include "../00-primitives/math.fy"      ( dsp-std: sin2pi, exp2, log2 )
 
+:: RH-REF-HZ 146.83 ;     ( D3: where DRIVE's swing is stated )
+:: RH-SWING-TRACK 1.15 ;  ( swing ~ [D3/f]^this )
+:: RH-SWING-MAX 2.0 ;
+:: RH-SCATTER 0.25 ;      ( key-to-key spread of the tine offset, pickup widths )
+:: RH-TOP-HZ 1700.0 ;     ( above this the decay shortens as f^4 )
+:: RH-TINE-RATIO 7.35 ;   ( the tine's second mode, measured: the tuning spring raises a bare bar's 6.27 )
+:: RH-OUT 0.45 ;          ( output trim: a full-velocity note near -6 dBFS at LEVEL 0.8 )
+
 ustruct: RhodesState
   f64 age         ( seconds since note-on )
   f64 gate-time   ( age at release; huge while held )
@@ -45,13 +58,15 @@ ustruct: RhodesState
   f64 bark-env    ( attack transient: extra pickup drive + chiff, 1 -> 0 )
   f64 phaseA      ( fundamental mode A phase )
   f64 phaseB      ( fundamental mode B phase, detuned )
-  f64 tine-phase  ( 6.267x tine overtone phase )
+  f64 tine-phase  ( tine overtone phase )
   f64 noise-rng   ( noise state for the hammer chiff [rand.fy] )
   f64 warm-lp     ( warmth one-pole lowpass state )
   f64 phi-prev    ( pickup flux last sample - the output is its derivative )
   f64 vel-amp     ( tine displacement scale for this strike: vel^1.4 * drive )
   f64 emf-norm    ( sr / [2 pi f0]: derivative gain that keeps level pitch-flat )
   f64 fund-dec-v  ( this note's decay multiplier - lower notes ring longer )
+  f64 off         ( this tine's offset from its pickup's axis: VOICING and the key's own )
+  f64 pf          ( this key's swing, x the swing at D3: long bass tines move further )
 ;
 
 ustruct: RhodesParams
@@ -108,11 +123,13 @@ dsp: rhodes-block-prepare
   1.0 swap f- -> params.bark-dec-coef
   ( detune multiplier: 1 + bar-detune*0.006 (up to ~0.6%) )
   1.0 params.bar-detune 0.006 f* f+ -> params.detune-mul
-  ( tine ping level in DISPLACEMENT: the pickup's derivative lifts a partial
-    at 6.267 f0 by 6.267, so 1/6.267 keeps BELL 1.0 at about the fundamental )
-  params.tine-q 0.16 f* -> params.tine-lvl
+  ( tine ping level in DISPLACEMENT.  The measured piano's is 38 dB under
+    the fundamental at the output [BELL 0.36]; the pickup's derivative
+    lifts it by its ratio, 7.35.  BELL 1 is 12 dB under: a caricature. )
+  params.tine-q dup dup f* f* 0.035 f* -> params.tine-lvl
   ( pickup: displacement at full velocity, attack-extra, voicing offset, chiff )
-  0.35 params.pickup-drive 1.25 f* f+ -> params.drive-amt
+  ( swing at D3, full velocity, in pickup widths: the measured piano is 2.3 )
+  0.6 params.pickup-drive 3.6 f* f+ -> params.drive-amt
   params.bark 0.6 f* -> params.bark-drive-amt
   ( offset 0.15..0.75: a centered tine [0] gives no fundamental at all )
   params.voicing 0.6 f* 0.15 f+ -> params.pickup-off
@@ -146,11 +163,21 @@ dsp: rhodes-note-on | ctx:Ctx state:RhodesState params:RhodesParams -- |
   2.8742942959070206e-06 -> state.noise-rng   ( 12345 * 2^-32: rand.fy states are fractions )
   0.0 -> state.warm-lp
   ( a strike from rest: flux starts at the tine's rest position )
-  1.0  1.0 params.pickup-off dup f* f+  f/  -> state.phi-prev
-  ctx.vel 0.0001 1.0 fclamp log2 1.4 f* exp2 params.drive-amt f*
+  ctx.hz 20.0 20000.0 fclamp | hz |
+  ( each tine sits a little differently against its pickup )
+  ctx.pitch 0.6180339887 f* ffrac 0.5 f- RH-SCATTER f*  params.pickup-off f+  0.1 fmax | off |
+  off -> state.off
+  1.0  1.0 off off f* f+  f/  -> state.phi-prev
+  ( the swing: bass tines are long and move further, as [D3/f]^1.15 up to
+    twice D3's; the output is divided by the same so the keys stay level )
+  RH-REF-HZ hz f/ log2 RH-SWING-TRACK f* exp2 RH-SWING-MAX fmin | pf |
+  pf -> state.pf
+  ctx.vel 0.0001 1.0 fclamp log2 1.4 f* exp2 params.drive-amt f* pf f*
     -> state.vel-amp
-  params.sr 6.283185307179586 ctx.hz f* f/  -> state.emf-norm
-  130.81 ctx.hz 20.0 20000.0 fclamp f/ log2 0.5 f* exp2
+  params.sr 6.283185307179586 hz f* f/  pf f/ RH-OUT f*  -> state.emf-norm
+  ( decay: as [C3/f]^0.5, and the short top tines faster still )
+  130.81 hz f/ log2 0.5 f* exp2
+    hz RH-TOP-HZ f/ dup f* dup f* 1.0 f+ f/
     params.fund-tau f* | tau |
   params.sr 0.15915494309189535 tau f/ svf-dc-coeff 1.0 swap f-
     -> state.fund-dec-v
@@ -160,7 +187,7 @@ dsp: rhodes-note-on | ctx:Ctx state:RhodesState params:RhodesParams -- |
   sounding voice to ctx.hz. )
 dsp: rhodes-note-expr | ctx:Ctx state:RhodesState params:RhodesParams -- |
   ctx.hz -> state.note-hz
-  params.sr 6.283185307179586 ctx.hz f* f/  -> state.emf-norm
+  params.sr 6.283185307179586 ctx.hz 20.0 20000.0 fclamp f* f/  state.pf f/ RH-OUT f*  -> state.emf-norm
 ;
 
 ( ctx state params -- : release this voice — the damper engages. )
@@ -205,14 +232,14 @@ dsp: rhodes-fund | state:RhodesState params:RhodesParams -- y |
     -> state.phaseB
 ;
 
-( The 6.267x clamped-free-bar tine overtone — the metallic ping — with its
+( The tine's second mode at RH-TINE-RATIO — the metallic ping — with its
   own faster decay. )
 dsp: rhodes-tine | state:RhodesState params:RhodesParams -- y |
   state.tine-phase sin2pi
   state.tine-env f* params.tine-lvl f* state.amp-atk f*
-  ( advance: note-hz * 6.267 )
+  ( advance: note-hz * RH-TINE-RATIO )
   state.tine-phase
-    state.note-hz params.inv-sr f* 6.267 f* f+ ffrac
+    state.note-hz params.inv-sr f* RH-TINE-RATIO f* f+ ffrac
     -> state.tine-phase
 ;
 
@@ -226,10 +253,9 @@ dsp: rhodes-tine | state:RhodesState params:RhodesParams -- y |
   DC, so no DC blocker [the old tanh pickup needed one, and thumped]. )
 dsp: rhodes-pickup | state:RhodesState params:RhodesParams fund tine -- y |
   fund tine f+
-    state.vel-amp
-    params.bark-drive-amt state.bark-env f* state.vel f* f+
+    state.vel-amp  params.bark-drive-amt state.bark-env f* 1.0 f+  f*
   f* | x |
-  x params.pickup-off f- | d |
+  x state.off f- | d |
   1.0  1.0 d d f* f+  f/ | phi |
   phi state.phi-prev f- state.emf-norm f*
   state.noise-rng& noise-step
