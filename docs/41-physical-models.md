@@ -66,8 +66,9 @@ once a third machine needs it:
   quartic potential, so the coupling only moves energy between modes.
   Its stiffness is capped so the explicit step stays stable.
 - **Diffuse-field energy store.** The modes too dense to simulate are one
-  energy reservoir fed by the discrete modes and radiated as band noise:
-  statistical energy analysis (Lyon 1975).
+  energy reservoir radiated as band noise: statistical energy analysis
+  (Lyon 1975). In the kit it is fed by the strike, not by the ringing
+  modes (see below).
 - **Lumped collision rattle.** A mass on a spring that collides with a
   body through `contact-solve`. Its collision force, times noise, drives a
   wide resonant bank. This is the snare wires.
@@ -137,25 +138,85 @@ The lower note of each tom pair, and the second kick, sit a little lower
 
 - **Heads** use the Bessel ratios, compressed slightly (ratio^0.94) as
   air loading does to a real drum. They are struck at a radius where
-  `J_m(j_mn r)` sets each mode's drive. Loss is `σ = s0 + s1 f²` through
-  two T60s.
+  `J_m(j_mn r)` sets each mode's drive. A head's overtones die faster
+  than its fundamental, `σ = σ_a (f/f0)^g`: g is 1.6 for the damped kick,
+  1.3 for toms, 1 for the snare. (Until 2026-11-11 the loss was
+  `s0 + s1 f²` through T60s at f0 and 3 kHz, which left every overtone
+  under 1 kHz ringing as long as the fundamental: drums like timpani.)
 - **Tension modulation.** The gain is `G = 150/c²` per ply (c is the
   head's wave speed). That follows from the Mylar's elastic stiffness
   against its tension: at 1 mm of excursion a snare head runs 2–3 %
   sharp. GLIDE scales it.
 - **Strikers.** A hickory stick is a Hertz contact, `K = 4/3 E* √R`:
   4.4e8 on Mylar, 1.2e9 on bronze. The kick beater is felt. The stick's
-  impact force, high-passed at about 1 kHz, adds the click.
+  impact force, high-passed twice at about 1 kHz, adds the click. The
+  kick's beater slap is a 15 ms burst of noise above 1.5 kHz, about
+  30 dB under the body.
 - **Snare wires.** A 4 g lumped mass on a 100 Hz spring, resting a hair
   under the head center. WIRES sets the gap. Collisions drive eight wide
-  buzz modes from 2.1 to 7.6 kHz.
-- **Plates.** 40 modes on a stretched, jittered series
-  `((i + 1.2)/1.2)^1.17`. Strike weights fall as ratio^−0.7. A bounded
-  cubic coupling (BLOOM) moves energy between them, and a diffuse field
-  takes over the upper modes' energy as band noise: 1.8–4 kHz high-pass,
-  6.5 kHz two-pole low-pass.
+  buzz modes from 2.1 kHz up, and the strands go on shaking after a
+  collision (T60 0.2 s × the snare's DECAY), which is the snare's tail:
+  the level of the last collision, decaying, drives the buzz modes with
+  noise and adds plain noise between them.
+- **Fitted to recordings (2026-11-11).** The kit is tuned against the
+  VCSL library's real suspended cymbal, hi-hat, snare (wires on and off)
+  and toms, by comparing band levels over time (five bands, six windows
+  to 3.5 s, relative to the peak). What that showed, against the
+  guesses before it: a cymbal's spectrum is flat per Hz from 150 Hz to
+  20 kHz at the hit; its lows ring for many seconds while the top falls
+  20 dB in 300 ms (`σ = s0 + s1 f²`, T60 8–12 s at the lowest mode,
+  1.4–1.8 s at 8 kHz); a hi-hat decays at nearly one rate across the
+  band (0.6 s closed, 3 s open); a snare's wires hold the 1–8 kHz band
+  for about 100 ms, 18 dB under the body; a tom's overtone band is as
+  loud as its fundamental at the hit.
+- **Stick on a head.** The 40 modes kept are too few to carry the local
+  give of a membrane under a stick, so with the Hertz stiffness the
+  stick left in two samples and chattered: a full-height click and a
+  body ten times quieter. That compliance is now in the contact
+  (K = 10^6.3–6.5 for toms and snare), which lasts about a millisecond.
+- **Cymbals (since 2026-11-11).** Three plates, hats, crash and ride,
+  live in the machine's shared region and persist between hits: a second
+  hit adds to a plate that is still ringing, and closing the hats is
+  damping written onto the same plate, which is the choke. Each is 160
+  modes at constant density from its lowest mode (380, 170, 230 Hz) to
+  13.5–15 kHz, each mode placed at random in its own cell, as exact
+  rotations with loss `σ = s0 + s1 f²` through T60s at the lowest
+  mode and at 8 kHz. A hit is a raised-cosine force pulse, two samples
+  at full velocity and up to 0.1 ms longer when soft (STICK scales it),
+  so the attack is flat to 20 kHz. Modes run to 19 kHz; those above
+  8 kHz stay off the springs, because near Nyquist the explicit kick
+  resonates with the step and gains energy. The
+  nonlinearity is four springs per plate: mode i hangs on spring
+  i mod 4, a spring's coordinate is `u = Σ a_i q_i` and its force
+  `g(u) = G u0 x²(β + x)/(1 + x²)`, `x = u/u0`. It is quadratic then
+  cubic, as a shallow shell's is, has a potential (so it only moves
+  energy between modes) and a bounded slope (so the explicit kick is
+  stable; G = 30 at 48 kHz, 60 is not). The products of the low modes
+  drive the high ones: a hard crash's top octave rises about 6 dB over
+  the first 20–100 ms, a soft one's less. BLOOM scales G, and past 1
+  lowers u0. This reduced coupling stands in for the von Kármán plate,
+  which needs some 800 modes at 100 kHz (Ducceschi & Touzé 2015; Nguyen
+  & Touzé 2019); a single shared cubic term, as before, is a Berger-type
+  model, which glides but does not cascade (Bilbao et al. 2023). There
+  is no noise source in the cymbals. The plates were prototyped in numpy
+  first. Each plate has its own gated shared word (docs/04), so it costs
+  nothing until hit; a ringing plate is about 1.5 µs per sample.
+- **Plates, the old per-voice model (unused for cymbals now).** 40 modes on a stretched, jittered series
+  `((i + 1.2)/1.2)^1.17`. Strike weights go as ratio^t: t is +0.7 for
+  hats, −0.35 crash, −0.2 ride, −0.7 bell. A bounded cubic coupling
+  (BLOOM) moves energy between them. The diffuse field is band noise,
+  1.8–4 kHz high-pass and 8.5 kHz two-pole low-pass, kept well under the
+  modes (a first pass had it louder and longer, which read as hiss). The stick's kinetic
+  energy passes into it over the piece's bloom time (2 ms closed hat,
+  4 ms open, 20 ms crash, 30 ms ride) and it decays at the piece's
+  high-frequency T60, so a cymbal is brightest just after the hit.
+  (Before, the field was fed continuously by the modes' strain energy:
+  it swelled over a second with no attack and lasted as long as the
+  lowest partial.) The diffuse field and the kick's noise slap are
+  switched off. The wires' tail is back, set from the recorded snare
+  and rolled off at 4.5 kHz.
 
-**Cost:** about 530 ns per sample in Debug for the bench hit sequence.
+**Cost:** about 480 ns per sample in Debug for the bench hit sequence.
 The render word, like the piano's, renders without NEON lanes.
 
 ## Fretwire: pickups, wiring and bodies

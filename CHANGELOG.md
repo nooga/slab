@@ -6,6 +6,12 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Skinwork Kit**: the cymbals and hats are rebuilt as three ringing
+  plates with real nonlinear coupling and no noise. They are bright from
+  the hit, hard hits bloom, a second hit adds to a cymbal that is still
+  ringing, and a closed hat chokes an open one. Kick, snare and tom
+  overtones now die faster than the fundamental. Projects that use the kit
+  will sound different, and each piece's level has been retrimmed.
 - **Magnet Zither**, a new instrument: ten strings in one of seven tunings,
   plucked from the keys, and two spinning magnet discs that make them drone
   with no note held. Sweep a disc's SPIN to walk through the tuning's
