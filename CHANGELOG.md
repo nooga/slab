@@ -50,6 +50,10 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   the take (harmonics-to-noise at or above the source's on speech, from
   up to 2.6 dB below). Analysing a take for Tune takes about a third
   longer the first time.
+- **Tune moves a voice's formants.** The tune row's new **FORM** control
+  (±12 semitones) shifts a tuned clip's resonances without changing its
+  pitch: up for a thinner, synthetic voice, down for a darker one.
+  slabkit: `audio(…, tune=…, formant=3)`.
 
 ## 0.0.23 — 2026-11-04
 
