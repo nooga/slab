@@ -1,0 +1,15 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "zither",
+  "note": "Plucked near the middle, dark and round, open D",
+  "params": {
+    "zi-tuning": 0,
+    "zi-ring": 14,
+    "zi-tone": 0.35,
+    "zi-pluck": 0.9,
+    "zi-damp": 0,
+    "zi-a-on": 0,
+    "zi-b-on": 0
+  }
+}

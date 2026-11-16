@@ -1,0 +1,11 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "rotary",
+  "note": "The amp pushed hard, fast",
+  "params": {
+    "ro-speed": 2,
+    "ro-drive": 0.6,
+    "ro-out": -3
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "organ",
+  "note": "The first three drawbars, third-harmonic percussion and the deepest chorus",
+  "params": {
+    "or-d16": 8,
+    "or-d513": 8,
+    "or-d8": 8,
+    "or-d4": 0,
+    "or-d223": 0,
+    "or-d2": 0,
+    "or-d135": 0,
+    "or-d113": 0,
+    "or-d1": 0,
+    "or-perc": 1,
+    "or-pharm": 1,
+    "or-pfast": 1,
+    "or-psoft": 1,
+    "or-vib": 6,
+    "or-click": 0.5
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "zitherfx",
+  "note": "All wet: only the D minor strings are heard, sung by whatever goes in",
+  "params": {
+    "zi-tuning": 1,
+    "zi-ring": 14,
+    "zi-tone": 0.55,
+    "zi-coil": 1,
+    "zi-mix": 1,
+    "zi-out": 3
+  }
+}

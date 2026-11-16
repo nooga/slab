@@ -1,0 +1,22 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "organ",
+  "note": "One drawbar and second-harmonic percussion: the plink on every detached note",
+  "params": {
+    "or-d16": 0,
+    "or-d513": 0,
+    "or-d8": 8,
+    "or-d4": 0,
+    "or-d223": 0,
+    "or-d2": 0,
+    "or-d135": 0,
+    "or-d113": 0,
+    "or-d1": 0,
+    "or-perc": 1,
+    "or-pharm": 0,
+    "or-pfast": 1,
+    "or-click": 0.6,
+    "or-volume": 4
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "echo2",
+  "note": "Heads 2 and 4, a dotted bounce that darkens; the everyday setting",
+  "params": {
+    "echo-length": 0.42,
+    "echo-speed": 1,
+    "echo-sync": 0,
+    "echo-h1": 0,
+    "echo-h2": 1,
+    "echo-h3": 0,
+    "echo-h4": 1,
+    "echo-mode": 0,
+    "echo-spread": 0.6,
+    "echo-repeat": 0.5,
+    "echo-tone": 4200,
+    "echo-drive": 0.3,
+    "echo-freeze": 0,
+    "echo-wow": 0.3,
+    "echo-flutter": 0.3,
+    "echo-hiss": 0.3,
+    "echo-pops": 0.2,
+    "echo-wear": 0.15,
+    "echo-mix": 0.35
+  }
+}

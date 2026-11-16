@@ -9,8 +9,9 @@
   [10-physical/bessel.fy]: modes at the Bessel ratios j_mn/j_01, a little
   compressed as air loading does to a real drum, struck at a radius whose
   shape value J_m[j_mn r] sets how hard each mode is driven - a center
-  hit is round, toward the rim the overtones come in.  Loss rises with
-  frequency, sigma = s0 + s1 f^2, fitted through two T60s.  Hard hits
+  hit is round, toward the rim the overtones come in.  A head's
+  overtones die faster than its fundamental, sigma = sa [f/f0]^g: g is
+  1.6 for the damped kick, 1.3 for toms, 1 for the snare.  Hard hits
   stretch the head and raise its tension: the modes run sharp in
   proportion to the head's strain energy and glide down as it decays
   [tension modulation; Berger's approximation, Bilbao 2009 ch. 13].  The
@@ -20,6 +21,12 @@
   and a quadratic coupling between them through one shared coordinate
   [the lowest-order von Karman term], which pumps energy from the struck
   low modes into the upper ones - the crash's bloom and wash.
+  Above the 40 modes a plate has thousands more, kept as one diffuse
+  energy store [statistical energy analysis] that radiates band noise.
+  The stick's kinetic energy passes into it over the piece's bloom time
+  [2 ms for hats, 20-30 ms for a crash or ride] and it decays at the
+  piece's high-frequency rate, so a cymbal is brightest just after the
+  hit and its wash dies before its low partials do.
 
   STRIKERS are point masses meeting the body through the implicit
   power-law contact of 10-physical/modal.fy: hickory sticks as a Hertz
@@ -29,7 +36,9 @@
   SNARE WIRES are a lumped mass on a spring just under the head's center.
   When the head swings into them they collide [the same contact solve],
   fly off and fall back, rattling; each collision rings a bank of short
-  high modes - the wires' buzz - and pushes back on the head.
+  high modes - the wires' buzz - and pushes back on the head.  The strands
+  go on shaking after a collision [T60 0.2 s], which is the snare's
+  tail; between the buzz modes their scatter is plain noise.
 
   A closed or pedal hat chokes any open hat still ringing [through
   params.hat-clock].
@@ -46,6 +55,8 @@ include "../00-primitives/rand.fy"
 
 :: DN 40 ;   ( modes per hit )
 :: WN 8 ;    ( wire buzz modes )
+:: KIT-PUMP 0.0 ;   ( strike energy -> diffuse field )
+:: KIT-WIRE-SHAKE 1.0 ;
 
 ( plate mode ratios: [[i + 1.2]/1.2]^1.17 with a fixed jitter, so no two partials line up, x 1e6 )
 table: cym-ratio 40
@@ -86,6 +97,32 @@ table: cym-r 40
 table: wire-hz 8
   f>i [ 2100000000 4065750000 6606480000 9422190000 13112880000 17078550000 21919200000 27334830000 27334830000 ] swap qnth i>f 0.000001 f* ;
 
+:: KP-N 160 ;                 ( modes per plate )
+:: KP-WREF 1130.9733552923256 ; ( 2 pi 180: the plates' reference rate )
+:: KP-BETA 0.6 ;              ( the springs' quadratic share: the dome )
+:: KP-G 30.0 ;                ( their stiffness at 48 kHz; 60 is past stable )
+:: KP-U0 0.05 ;               ( the amplitude at which they bend )
+:: KP-OUT-HAT 1.35 ;
+:: KP-OUT-CRASH 1.45 ;
+:: KP-OUT-RIDE 1.4 ;
+
+( The cymbals: three plates [hats, crash, ride] that persist between
+  hits, 160 modes each, in the machine's shared region; slot 3 is spare,
+  where a drum hit's unused tables land.  Each array holds the four
+  slots one after another. )
+ustruct: KpShared
+  f64 q 640   f64 v 640       ( mode states, v in units of w q )
+  f64 cr 640  f64 sn 640      ( decay x cos, decay x sin of the step )
+  f64 ph 640                  ( the strike's weight on each mode )
+  f64 au 640  f64 af 640      ( into its spring's coordinate, and the force back )
+  f64 ol 640  f64 or 640      ( radiation to each microphone )
+  f64 f 4                     ( the stick's force this sample; the voices add )
+  f64 g 16  f64 uu 16         ( four springs per plate: force, coordinate )
+  f64 u0 4  f64 gk 4
+  f64 ul 4  f64 ur 4
+  f64 gate 4                  ( set by a hit; wakes the plate's word )
+;
+
 ustruct: KitState
   f64 q 40   f64 v 40
   f64 c 40   f64 sw 40   f64 ws 40   f64 rho 40
@@ -110,7 +147,7 @@ ustruct: KitState
   f64 sm  f64 sk  f64 sp  f64 sal   ( striker mass, stiffness, exponent, hysteresis )
   f64 scomp                         ( striker + body compliance at the strike point )
   f64 stick-on
-  f64 click-lp  f64 click-g
+  f64 click-lp  f64 click-lp2  f64 click-g
   f64 wu  f64 wuv  f64 we           ( wire mass position, velocity, compression )
   f64 wcomp  f64 wgap  f64 wbuzz
   f64 gain                          ( piece level x velocity scaling )
@@ -122,8 +159,14 @@ ustruct: KitState
   f64 hpa  f64 lpa                  ( its band: one-pole coefficients )
   f64 hl  f64 ll  f64 hr  f64 lr    ( its filter states )
   f64 ll2  f64 lr2
+  f64 ep  f64 kb                    ( the strike's energy on its way into the field, and its rate )
+  f64 wlp  f64 wla                  ( the wires heard through the head and shell: a 4.5 kHz rolloff )
+  f64 wen  f64 wdk                  ( the wires still shaking after a collision, and their decay )
   ( the hit, for the mode stages )
-  f64 k-f0  f64 k-s0  f64 k-s1  f64 k-sq  f64 k-r  f64 k-h  f64 k-fny
+  f64 k-f0  f64 k-s0  f64 k-s1  f64 k-sq  f64 k-r  f64 k-h  f64 k-fny  f64 k-tilt
+  ( a cymbal hit: which plate, its tables' first cell, the stick's pulse )
+  f64 pi  f64 pbase  f64 page  f64 pnw  f64 pamp  f64 vlvl
+  f64 kp-f1  f64 kp-df  f64 kp-s0  f64 kp-s1  f64 kp-tilt  f64 kp-width
 ;
 
 ustruct: KitParams
@@ -214,20 +257,24 @@ dsp: kit-key | ctx:Ctx state:KitState params:KitParams -- |
   p params.kick-decay params.snare-decay params.snare-decay params.tom-decay params.tom-decay
     params.tom-decay params.hat-decay params.hat-decay params.hat-decay params.crash-decay
     params.ride-decay params.ride-decay sel12 | dk |
-  p 0.5 0.6 0.15 1.4 1.0 0.8 0.18 0.06 1.8 5.0 7.0 5.0 sel12 dk f* t60>sigma | sa |
-  p 0.06 0.25 0.07 0.18 0.18 0.18 0.12 0.04 1.0 1.6 2.2 2.5 sel12 dk f* t60>sigma | sb |
-  ( membranes lose as f^2, plates as f )
-  plm 1.0 2.0 select | sq |
+  p 0.7 0.5 0.15 1.8 1.5 1.2 0.18 0.06 1.8 3.5 4.5 5.0 sel12 dk f* t60>sigma | sa |
+  p 0.015 0.25 0.07 0.18 0.18 0.18 0.12 0.04 0.6 1.2 1.2 1.0 sel12 dk f* t60>sigma | sb |
+  ( plates lose as f, through the two T60s.  A head's overtones die
+    faster than its fundamental, sigma = sa [f/f0]^g: a damped kick's
+    much faster, a snare's and a tom's in proportion )
+  p 1.2 0.7 1.0 0.6 0.6 0.6 1.0 1.0 1.0 1.0 1.0 1.0 sel12 | sq |
   sq -> state.k-sq
-  3000.0 sq pow  f0 sq pow  f- 1.0 fmax | span |
-  sb sa f- 0.0 fmax span f/ | s1 |
-  s1 -> state.k-s1
-  sa s1 f0 sq pow f* f- 0.0 fmax -> state.k-s0
+  3000.0 f0 f- 1.0 fmax | span |
+  sb sa f- 0.0 fmax span f/ | s1p |
+  plm  s1p  sa f0 sq pow f/  select -> state.k-s1
+  plm  sa s1p f0 f* f- 0.0 fmax  0.0  select -> state.k-s0
+  ( how fast a plate's strike weights fall with the mode's frequency )
+  p 0.0 0.0 0.0 0.0 0.0 0.0 0.7 0.7 0.7 -0.35 -0.2 -0.7 sel12 -> state.k-tilt
   ( body: radius, mass, strike radius )
   p 0.229 0.17 0.17 0.2 0.165 0.15 0.18 0.18 0.18 0.23 0.255 0.255 sel12 | a |
   p 0.08 0.032 0.032 0.057 0.038 0.032 0.8 0.8 0.8 1.5 2.2 2.2 sel12 0.25 f* | mm |
   1.0 mm f/ -> state.inv-m
-  p 0.1 0.35 0.92 0.4 0.4 0.4 0.6 0.6 0.6 0.85 0.6 0.12 sel12 -> state.k-r
+  p 0.1 0.35 0.92 0.62 0.62 0.62 0.6 0.6 0.6 0.85 0.6 0.12 sel12 -> state.k-r
   ( tension modulation: G = 150 / c^2, c = 2 pi f0 a / j01, two-ply heads stiffer )
   6.283185307179586 f0 f* a f* 2.4048 f/ dup f* | c2 |
   p 300.0 150.0 150.0 300.0 150.0 150.0 0.0 0.0 0.0 0.0 0.0 0.0 sel12 c2 f/
@@ -243,7 +290,10 @@ dsp: kit-key | ctx:Ctx state:KitState params:KitParams -- |
   ( striker: mass, stiffness, exponent, hysteresis, speed )
   p 0.035 0.012 0.02 0.012 0.012 0.012 0.012 0.008 0.012 0.012 0.012 0.012 sel12 | sm |
   sm -> state.sm
-  p 7.3 8.64 8.3 8.64 8.64 8.64 9.08 8.8 9.08 9.08 9.08 9.2 sel12
+  ( a head gives under the stick: the modes kept here are too few to carry
+    that local compliance, so it is put in the contact, which then lasts
+    about a millisecond as on a real head, not two samples )
+  p 7.9 6.5 7.0 6.3 6.3 6.3 9.08 8.8 9.08 9.08 9.08 9.2 sel12
     params.stick 0.7 f* f+ 3.321928094887362 f* exp2 -> state.sk
   p 2.3 1.5 1.5 1.5 1.5 1.5 1.5 1.5 1.5 1.5 1.5 1.5 sel12 -> state.sp
   p 0.3 0.05 0.1 0.05 0.05 0.05 0.05 0.2 0.05 0.05 0.05 0.05 sel12 -> state.sal
@@ -253,8 +303,8 @@ dsp: kit-key | ctx:Ctx state:KitState params:KitParams -- |
   -0.00002 -> state.su  -0.00002 -> state.se
   1.0 -> state.stick-on
   h h f* 0.5 f* state.sm f/ -> state.scomp
-  0.0 -> state.click-lp
-  p 0.25 0.12 0.5 0.08 0.08 0.08 0.15 0.3 0.15 0.08 0.1 0.1 sel12 -> state.click-g
+  0.0 -> state.click-lp  0.0 -> state.click-lp2
+  p 0.25 0.08 0.5 0.12 0.12 0.12 0.1 0.15 0.1 0.1 0.1 0.12 sel12 -> state.click-g
   ( wires: rest a hair under the head, closer with more WIRES )
   0.0 -> state.wu  0.0 -> state.wuv  -0.00001 -> state.we
   1.0 wi f- 0.00006 f* 0.000005 f+ -> state.wgap
@@ -265,7 +315,7 @@ dsp: kit-key | ctx:Ctx state:KitState params:KitParams -- |
   p params.kick-level params.snare-level params.snare-level params.tom-level params.tom-level
     params.tom-level params.hat-level params.hat-level params.hat-level params.crash-level
     params.ride-level params.ride-level sel12
-  p 0.5 0.019 0.054 0.03 0.025 0.024 0.05 0.32 0.045 0.055 0.1 0.1 sel12 f*
+  p 0.783 0.0748 0.147 0.201 0.144 0.116 0.0103 0.107 0.015 0.0243 0.0192 0.215 sel12 f*
     params.level f* params.sr f* 0.002 f* -> state.gain
   ( the wire buzz bank )
   0.0 WN [ | j |
@@ -282,15 +332,97 @@ dsp: kit-key | ctx:Ctx state:KitState params:KitParams -- |
   0.0 -> state.ed  0.0 -> state.hl  0.0 -> state.ll  0.0 -> state.hr  0.0 -> state.lr
   0.0 -> state.ll2  0.0 -> state.lr2
   sb h f* fneg exp -> state.dr
-  p 0.0 0.0 0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0 0.5 0.2 sel12 params.bloom f* 160.0 f* -> state.kap
-  p 0.0 0.0 0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0 1.0 1.0 sel12 -> state.dgain
-  params.sr  p 0.0 0.0 0.0 0.0 0.0 0.0 4000.0 4000.0 3500.0 1800.0 2200.0 2500.0 sel12 1000.0 fmax
+  p 0.0 0.0 0.0 0.0 0.0 0.0 1.0 1.0 1.0 0.5 0.12 0.03 sel12 params.bloom f*
+    ( the kick's beater slaps the head: the same store, tiny and gone in 15 ms )
+    p 0.002 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 sel12 f+  160.0 f* -> state.kap
+  p 1.0 0.0 0.0 0.0 0.0 0.0 1.0 1.0 1.0 1.0 1.0 1.0 sel12 -> state.dgain
+  params.sr  p 1500.0 0.0 0.0 0.0 0.0 0.0 4000.0 4000.0 3500.0 1800.0 2200.0 2500.0 sel12 1000.0 fmax
     svf-dc-coeff -> state.hpa
-  params.sr 6500.0 svf-dc-coeff -> state.lpa
+  params.sr 8500.0 svf-dc-coeff -> state.lpa
+  ( the field is fed by the strike: the stick's energy passes into it
+    over the piece's bloom time, at once for hats, tens of ms for a crash )
+  0.5 sm f* state.sv dup f* f* state.kap f* KIT-PUMP f* -> state.ep
+  1.0  p 0.001 1.0 1.0 1.0 1.0 1.0 0.002 0.002 0.004 0.02 0.03 0.03 sel12 params.sr f*  f/ -> state.kb
+  ( the wires go on shaking after a collision, T60 0.2 s )
+  0.0 -> state.wen  0.0 -> state.wlp
+  1.0  -28274.333882308138 params.inv-sr f* exp  f- -> state.wla
+  -6.907755278982137  0.4 dk f* params.sr f*  f/ exp -> state.wdk
   ( every hit starts its noise from the same place, like a sample, but
     the two channels differ )
   0.1234567 -> state.rng-l  0.7654321 -> state.rng-r
+  ( --- cymbals: the hit goes to a plate in the shared region --- )
+  ctx.shared& p@64 | s:KpShared |
+  p 8.5 f<  0.0  p 9.5 f< 1.0 2.0 select  select | pc |
+  plm pc 3.0 select | pi |
+  pi -> state.pi
+  pi 160.0 f* -> state.pbase
+  ( the plate's lowest mode and its span: 160 modes to the top )
+  p 0.0 0.0 0.0 0.0 0.0 0.0 380.0 380.0 380.0 170.0 230.0 230.0 sel12 tune f* 20.0 fmax | pf1 |
+  pf1 -> state.kp-f1
+  p 0.0 0.0 0.0 0.0 0.0 0.0 19500.0 19500.0 19500.0 19000.0 19000.0 19000.0 sel12 1000.0 fmax
+    pf1 f- 160.0 f/ -> state.kp-df
+  ( loss sigma = s0 + s1 f^2 through T60s at the lowest mode and at
+    8 kHz, fitted to a recorded suspended cymbal and hi-hat [VCSL].  Closing the hats is damping on the same plate, so a closed
+    hit chokes an open one )
+  p 1.0 1.0 1.0 1.0 1.0 1.0 0.6 0.25 3.0 8.0 12.0 12.0 sel12 dk f* t60>sigma | psa |
+  p 1.0 1.0 1.0 1.0 1.0 1.0 0.6 0.2 3.0 1.4 1.8 1.8 sel12 dk f* t60>sigma | psb |
+  psb psa f- 0.0 fmax  6.4e7  pf1 pf1 f* f-  f/ | ps1 |
+  ps1 -> state.kp-s1
+  psa ps1 pf1 pf1 f* f* f- 0.0 fmax -> state.kp-s0
+  ( the bell is struck where the low modes are )
+  p 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 -0.1 0.0 -0.6 sel12 -> state.kp-tilt
+  params.width -> state.kp-width
+  ( the stick's pulse: a raised cosine, shorter for a harder stick )
+  ( a hard hit is two samples long, a soft one a tenth of a millisecond more )
+  p 0.0002 0.0002 0.0002 0.0002 0.0002 0.0002 0.00004 0.0003 0.00004 0.00004 0.00004 0.00015 sel12
+    1.0 vel f- 0.0001 f* f+
+    params.stick fneg exp2 f* params.sr f* 2.0 fmax | pnw |
+  pnw -> state.pnw
+  p 0.0 0.0 0.0 0.0 0.0 0.0 0.7 1.0 0.8 1.2 0.7 5.5 sel12  vel 1.7 pow f*  pnw f/ -> state.pamp
+  0.0 -> state.page
+  ( the springs: BLOOM past 1 lowers the amplitude at which they bend )
+  KP-U0 params.bloom 1.0 fmax f/ s.u0& pi f!i
+  KP-G params.bloom 1.0 fmin f*  params.sr 48000.0 f/ dup f* 1.0 fmin f*  s.gk& pi f!i
+  1.0 s.gate& pi f!i
+  ( a cymbal hit makes no sound of its own )
+  plm 0.0 state.gain select -> state.gain
+  plm 0.0 state.stick-on select -> state.stick-on
 ;
+
+( shared state k -- : mode k of the hit's plate: rate, loss, strike
+  weight, spring weights, radiation.  The plate's states are left alone:
+  it is still ringing from the last hit. )
+dsp: kp-prep-mode | s:KpShared st:KitState k -- |
+  st.pbase k f+ | i |
+  k 1.0 f+ | n |
+  n 0.6180339887498949 f* st.pi 0.37 f* f+ ffrac | h1 |
+  n 0.7548776662466927 f* st.pi 0.11 f* f+ ffrac | h2 |
+  n 0.5698402909980532 f* ffrac | h3 |
+  n 0.8191725133961645 f* ffrac | h4 |
+  n 0.6710436067037893 f* ffrac | h5 |
+  n 0.5497004779019703 f* ffrac | h6 |
+  ( constant density, each mode somewhere in its own cell: no two plates
+    and no two partials line up )
+  st.kp-f1  k h1 f+ st.kp-df f* f+  st.k-fny fmin | f |
+  f 6.283185307179586 f* | w |
+  w st.k-h f* | wh |
+  st.kp-s0  st.kp-s1 f f* f f* f+  st.k-h f* fneg exp | rho |
+  rho wh cos f* s.cr& i f!i
+  rho wh sin f* s.sn& i f!i
+  w KP-WREF f/ | wr |
+  h2 0.5 f> 1.0 -1.0 select  h3 0.5 f* 0.5 f+ f*  f st.kp-f1 f/ st.kp-tilt pow f*  wr f/ s.ph& i f!i
+  ( modes above 8 kHz stay off the springs: near Nyquist the explicit
+    kick resonates with the step and gains energy )
+  h4 2.0 f* 1.0 f- 1.7320508075688772 f*  wr fsqrt f*  0.15811388300841897 f*
+    f  8000.0 st.k-fny 0.37 f* fmin  f< mask>f f* | au |
+  au s.au& i f!i
+  au fneg st.k-h f* KP-WREF f* KP-WREF f* w f/ s.af& i f!i
+  h5 2.0 f* 1.0 f- 1.7320508075688772 f* wr f* 0.07905694150420949 f* | l0 |
+  h6 2.0 f* 1.0 f- 1.7320508075688772 f* wr f* 0.07905694150420949 f* | r0 |
+  l0 s.ol& i f!i
+  l0  r0 l0 f- st.kp-width f*  f+ s.or& i f!i
+;
+
 
 ( state i -- comp : build mode i of the hit and return its compliance at
   the strike point [i a literal in each stage] )
@@ -310,7 +442,7 @@ dsp: kit-mode | state:KitState params:KitParams i -- comp |
   state.k-s0  state.k-s1 fr state.k-sq pow f* f+  sdf f+  h f* fneg exp state.rho& i f!i
   memb-m i f@i | m |
   ( shape at the strike point; plates use their fixed weights )
-  pl  cym-w i f@i cym-s i f@i f*  cym-ratio i f@i log2 -0.7 f* exp2 f*
+  pl  cym-w i f@i cym-s i f@i f*  cym-ratio i f@i log2 state.k-tilt f* exp2 f*
       i state.k-r memb-shape-at  select live f* | ph |
   ph state.phi& i f!i
   ph state.inv-m f* state.gs& i f!i
@@ -345,6 +477,37 @@ dsp: kit-wire-comp | ctx state:KitState params -- |
     -> state.wcomp
 ;
 
+dsp: kp-prep-0 | ctx:Ctx st:KitState p |
+  ctx.shared& p@64 | s:KpShared |
+  0.0 16 [ | k |  s st k kp-prep-mode  k 1.0 f+ ] times drop ;
+dsp: kp-prep-1 | ctx:Ctx st:KitState p |
+  ctx.shared& p@64 | s:KpShared |
+  16.0 16 [ | k |  s st k kp-prep-mode  k 1.0 f+ ] times drop ;
+dsp: kp-prep-2 | ctx:Ctx st:KitState p |
+  ctx.shared& p@64 | s:KpShared |
+  32.0 16 [ | k |  s st k kp-prep-mode  k 1.0 f+ ] times drop ;
+dsp: kp-prep-3 | ctx:Ctx st:KitState p |
+  ctx.shared& p@64 | s:KpShared |
+  48.0 16 [ | k |  s st k kp-prep-mode  k 1.0 f+ ] times drop ;
+dsp: kp-prep-4 | ctx:Ctx st:KitState p |
+  ctx.shared& p@64 | s:KpShared |
+  64.0 16 [ | k |  s st k kp-prep-mode  k 1.0 f+ ] times drop ;
+dsp: kp-prep-5 | ctx:Ctx st:KitState p |
+  ctx.shared& p@64 | s:KpShared |
+  80.0 16 [ | k |  s st k kp-prep-mode  k 1.0 f+ ] times drop ;
+dsp: kp-prep-6 | ctx:Ctx st:KitState p |
+  ctx.shared& p@64 | s:KpShared |
+  96.0 16 [ | k |  s st k kp-prep-mode  k 1.0 f+ ] times drop ;
+dsp: kp-prep-7 | ctx:Ctx st:KitState p |
+  ctx.shared& p@64 | s:KpShared |
+  112.0 16 [ | k |  s st k kp-prep-mode  k 1.0 f+ ] times drop ;
+dsp: kp-prep-8 | ctx:Ctx st:KitState p |
+  ctx.shared& p@64 | s:KpShared |
+  128.0 16 [ | k |  s st k kp-prep-mode  k 1.0 f+ ] times drop ;
+dsp: kp-prep-9 | ctx:Ctx st:KitState p |
+  ctx.shared& p@64 | s:KpShared |
+  144.0 16 [ | k |  s st k kp-prep-mode  k 1.0 f+ ] times drop ;
+
 ( ctx state params -- : strike this voice. )
 dsp: kit-note-on | ctx state params |
   ctx state params call: kit-key
@@ -352,6 +515,16 @@ dsp: kit-note-on | ctx state params |
   ctx state params call: kit-modes-1
   ctx state params call: kit-modes-2
   ctx state params call: kit-wire-comp
+  ctx state params call: kp-prep-0
+  ctx state params call: kp-prep-1
+  ctx state params call: kp-prep-2
+  ctx state params call: kp-prep-3
+  ctx state params call: kp-prep-4
+  ctx state params call: kp-prep-5
+  ctx state params call: kp-prep-6
+  ctx state params call: kp-prep-7
+  ctx state params call: kp-prep-8
+  ctx state params call: kp-prep-9
 ;
 
 ( ctx state params -- : every 32 samples - retire the striker once it has
@@ -405,14 +578,22 @@ dsp: kit-wires | state:KitState params:KitParams -- fw |
   ( the collision rings the wire buzz modes.  Twenty strands land at
     scattered moments, so the force reaching them is the collision force
     times noise )
-  state.rng-l& rand-b f 45.0 f* f* | fz |
+  state.wen state.wdk f*  f fabs  fmax | wen0 |
+  wen0 1.0e-9 f< 0.0 wen0 select | wen |
+  wen -> state.wen
+  state.rng-l& rand-b  f wen KIT-WIRE-SHAKE f* f+  2.0 f* f* | fz |
   0.0 0.0 WN [ | j acc |
     state.wq& j f@i | q |  state.wv& j f@i | v |
     state.wc& j f@i | c |  state.wrho& j f@i | r |
     c q f* state.wsw& j f@i v f* f+ r f* | qn |
     state.wws& j f@i q f* fneg c v f* f+ r f*  state.wb2& j f@i fz f* f+ | vn |
     qn state.wq& j f!i  vn state.wv& j f!i
-    j 1.0 f+  acc vn v f- f+ ] times nip  state.wires f* -> state.wbuzz
+    j 1.0 f+  acc vn v f- f+ ] times nip
+  ( between the wires' own resonances, the strands' scatter is plain noise )
+  state.rng-r& rand-b wen f* h f* 1.0 f*  f+  state.wires f* | wb |
+  state.wlp  wb state.wlp f- state.wla f*  f+ | wl |
+  wl -> state.wlp
+  wl -> state.wbuzz
   f
 ;
 
@@ -443,14 +624,20 @@ dsp: kit-body | io:Io state:KitState params:KitParams f fc -- |
     ol state.wl& i f@i dv f* f+
     or state.wr& i f@i dv f* f+ ] times | i y en ol or |
   y -> state.y  en -> state.en
-  ( the striker's click: its force, high-passed by a 1 kHz one-pole )
+  ( the striker's click: its force, high-passed twice at 1 kHz )
   state.click-lp | cl |
   f cl f- 0.12 f* cl f+ | cln |
   cln -> state.click-lp
-  f cln f- state.click-g f* state.inv-m f* params.inv-sr f* | ck |
+  f cln f- | h1 |
+  state.click-lp2 | cl2 |
+  h1 cl2 f- 0.12 f* cl2 f+ | cln2 |
+  cln2 -> state.click-lp2
+  h1 cln2 f- state.click-g f* state.inv-m f* params.inv-sr f* | ck |
   ( the diffuse field: fed by the modes' strain energy, radiated as noise
     in the plate's upper band, its amplitude the field's rms velocity )
-  state.ed state.dr f*  state.kap en f* params.inv-sr f* f+ | ed |
+  state.ep state.kb f* | xf |
+  state.ep xf f- -> state.ep
+  state.ed state.dr f*  xf f+ | ed |
   ed 1.0e-16 f> mask>f ed f* | ed |
   ed -> state.ed
   ed fsqrt state.dgain f* 7000.0 f* | da |
@@ -466,7 +653,7 @@ dsp: kit-body | io:Io state:KitState params:KitParams f fc -- |
 ;
 
 ( io ctx state params -- : one hit, one sample.  Output ACCUMULATES. )
-dsp: k-kit-voice | io:Io ctx state:KitState params:KitParams -- |
+dsp: k-kit-voice | io:Io ctx:Ctx state:KitState params:KitParams -- |
   ( the plate coupling: a cubic restoring force through the shared
     coordinate - a quartic potential, so it only moves energy between
     modes - with its stiffness capped so the explicit step stays stable )
@@ -477,4 +664,126 @@ dsp: k-kit-voice | io:Io ctx state:KitState params:KitParams -- |
   fnl fw state.inv-m f* f- | fc |
   state.stick-on 0.5 f> [ state params fc kit-stick ] [ 0.0 ] ifte | f |
   io state params f fc kit-body
+  ( a cymbal hit: the stick's pulse, onto its plate )
+  ctx.shared& p@64 | s:KpShared |
+  state.page | t |
+  t state.pnw f< mask>f | on |
+  1.0  t state.pnw f/ 6.283185307179586 f* cos  f- 0.5 f* state.pamp f* on f* | fpl |
+  s.f& state.pi f@i fpl f+  s.f& state.pi f!i
+  t 1.0 f+ -> state.page
+  on -> state.vlvl
 ;
+
+( --- the plates, once a sample while they ring -------------------------
+  A mode is an exact rotation with its decay.  Before it turns it takes
+  the stick's force and its spring's.  Each mode hangs on one of four
+  springs per plate [mode i on spring i mod 4]; a spring's coordinate is
+  u = sum au q over its modes and its force g[u] = G u0 x^2 [beta + x] /
+  [1 + x^2], x = u/u0: quadratic then cubic, as a shallow shell's is,
+  with a bounded slope so the explicit kick stays stable.  g depends on
+  u alone, so it has a potential and only moves energy between modes:
+  the products of the low modes drive the high ones, which is the bloom.
+  The reduced coupling stands in for the von Karman plate's, which needs
+  some 800 modes at 100 kHz [Ducceschi and Touze 2015; Nguyen and Touze
+  2019]. )
+
+( shared g f i -- du dl dr : mode i, one sample )
+dsp: kp-mode | s:KpShared g f i -- du dl dr |
+  s.v& i f@i  s.af& i f@i g f* f+  s.ph& i f@i f f* f+ | vk |
+  s.q& i f@i | q |
+  s.cr& i f@i | c |
+  s.sn& i f@i | sn |
+  c q f* sn vk f* f+ | qn |
+  c vk f* sn q f* f- | vn |
+  qn s.q& i f!i
+  vn s.v& i f!i
+  s.au& i f@i qn f*
+  s.ol& i f@i vn f*
+  s.or& i f@i vn f*
+;
+
+( shared pi b -- : 32 modes of plate pi from cell b )
+dsp: kp-stage | s:KpShared pi b -- |
+  s.f& pi f@i | f |
+  pi 4.0 f* | gi |
+  s.g& gi f@i | g0 |  s.g& gi 1.0 f+ f@i | g1 |
+  s.g& gi 2.0 f+ f@i | g2 |  s.g& gi 3.0 f+ f@i | g3 |
+  s.uu& gi f@i  s.uu& gi 1.0 f+ f@i  s.uu& gi 2.0 f+ f@i  s.uu& gi 3.0 f+ f@i
+  s.ul& pi f@i  s.ur& pi f@i  b
+  8 [ | u0 u1 u2 u3 ol or i |
+    s g0 f i kp-mode | a0 l0 r0 |
+    s g1 f i 1.0 f+ kp-mode | a1 l1 r1 |
+    s g2 f i 2.0 f+ kp-mode | a2 l2 r2 |
+    s g3 f i 3.0 f+ kp-mode | a3 l3 r3 |
+    u0 a0 f+  u1 a1 f+  u2 a2 f+  u3 a3 f+
+    ol l0 f+ l1 f+ l2 f+ l3 f+
+    or r0 f+ r1 f+ r2 f+ r3 f+
+    i 4.0 f+ ] times drop | u0 u1 u2 u3 ol or |
+  u0 s.uu& gi f!i  u1 s.uu& gi 1.0 f+ f!i
+  u2 s.uu& gi 2.0 f+ f!i  u3 s.uu& gi 3.0 f+ f!i
+  ol s.ul& pi f!i  or s.ur& pi f!i
+;
+
+( shared pi a -- : spring a of plate pi: its force for the next sample )
+dsp: kp-spring | s:KpShared pi a -- |
+  pi 4.0 f* a f+ | j |
+  s.u0& pi f@i | u0 |
+  s.uu& j f@i u0 f/ | x |
+  x x f* | x2 |
+  s.gk& pi f@i u0 f*  x2 f*  KP-BETA x f+ f*  1.0 x2 f+ f/  s.g& j f!i
+  0.0 s.uu& j f!i
+;
+
+( io shared pi level -- : the springs, the microphones; clears the sums )
+dsp: kp-fin | io:Io s:KpShared pi lvl -- |
+  s pi 0.0 kp-spring  s pi 1.0 kp-spring  s pi 2.0 kp-spring  s pi 3.0 kp-spring
+  io.out-l  s.ul& pi f@i lvl f*  f+ -> io.out-l
+  io.out-r  s.ur& pi f@i lvl f*  f+ -> io.out-r
+  0.0 s.ul& pi f!i  0.0 s.ur& pi f!i  0.0 s.f& pi f!i
+;
+
+dsp: kp-hat-0 | io ctx s:KpShared p |  s 0.0 0.0 kp-stage ;
+dsp: kp-hat-1 | io ctx s:KpShared p |  s 0.0 32.0 kp-stage ;
+dsp: kp-hat-2 | io ctx s:KpShared p |  s 0.0 64.0 kp-stage ;
+dsp: kp-hat-3 | io ctx s:KpShared p |  s 0.0 96.0 kp-stage ;
+dsp: kp-hat-4 | io ctx s:KpShared p |  s 0.0 128.0 kp-stage ;
+dsp: kp-hat-fin | io:Io ctx s:KpShared p:KitParams |  io s 0.0  p.hat-level p.level f* KP-OUT-HAT f*  kp-fin ;
+dsp: k-kit-hat | io ctx state params |
+  io ctx state params call: kp-hat-0
+  io ctx state params call: kp-hat-1
+  io ctx state params call: kp-hat-2
+  io ctx state params call: kp-hat-3
+  io ctx state params call: kp-hat-4
+  io ctx state params call: kp-hat-fin
+;
+
+dsp: kp-crash-0 | io ctx s:KpShared p |  s 1.0 160.0 kp-stage ;
+dsp: kp-crash-1 | io ctx s:KpShared p |  s 1.0 192.0 kp-stage ;
+dsp: kp-crash-2 | io ctx s:KpShared p |  s 1.0 224.0 kp-stage ;
+dsp: kp-crash-3 | io ctx s:KpShared p |  s 1.0 256.0 kp-stage ;
+dsp: kp-crash-4 | io ctx s:KpShared p |  s 1.0 288.0 kp-stage ;
+dsp: kp-crash-fin | io:Io ctx s:KpShared p:KitParams |  io s 1.0  p.crash-level p.level f* KP-OUT-CRASH f*  kp-fin ;
+dsp: k-kit-crash | io ctx state params |
+  io ctx state params call: kp-crash-0
+  io ctx state params call: kp-crash-1
+  io ctx state params call: kp-crash-2
+  io ctx state params call: kp-crash-3
+  io ctx state params call: kp-crash-4
+  io ctx state params call: kp-crash-fin
+;
+
+dsp: kp-ride-0 | io ctx s:KpShared p |  s 2.0 320.0 kp-stage ;
+dsp: kp-ride-1 | io ctx s:KpShared p |  s 2.0 352.0 kp-stage ;
+dsp: kp-ride-2 | io ctx s:KpShared p |  s 2.0 384.0 kp-stage ;
+dsp: kp-ride-3 | io ctx s:KpShared p |  s 2.0 416.0 kp-stage ;
+dsp: kp-ride-4 | io ctx s:KpShared p |  s 2.0 448.0 kp-stage ;
+dsp: kp-ride-fin | io:Io ctx s:KpShared p:KitParams |  io s 2.0  p.ride-level p.level f* KP-OUT-RIDE f*  kp-fin ;
+dsp: k-kit-ride | io ctx state params |
+  io ctx state params call: kp-ride-0
+  io ctx state params call: kp-ride-1
+  io ctx state params call: kp-ride-2
+  io ctx state params call: kp-ride-3
+  io ctx state params call: kp-ride-4
+  io ctx state params call: kp-ride-fin
+;
+

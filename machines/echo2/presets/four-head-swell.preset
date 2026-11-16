@@ -1,0 +1,27 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "echo2",
+  "note": "All four heads recorded again: the repeats smear into a wash, a reverb of sorts",
+  "params": {
+    "echo-length": 0.34,
+    "echo-speed": 1,
+    "echo-sync": 0,
+    "echo-h1": 1,
+    "echo-h2": 1,
+    "echo-h3": 1,
+    "echo-h4": 1,
+    "echo-mode": 1,
+    "echo-spread": 0.8,
+    "echo-repeat": 0.95,
+    "echo-tone": 3200,
+    "echo-drive": 0.35,
+    "echo-freeze": 0,
+    "echo-wow": 0.4,
+    "echo-flutter": 0.35,
+    "echo-hiss": 0.3,
+    "echo-pops": 0.15,
+    "echo-wear": 0.2,
+    "echo-mix": 0.4
+  }
+}

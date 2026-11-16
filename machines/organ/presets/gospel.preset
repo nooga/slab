@@ -1,0 +1,20 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "organ",
+  "note": "Full low end with the top drawbar for whistle; chorus on, play it through the rotary",
+  "params": {
+    "or-d16": 8,
+    "or-d513": 8,
+    "or-d8": 8,
+    "or-d4": 8,
+    "or-d223": 0,
+    "or-d2": 0,
+    "or-d135": 0,
+    "or-d113": 0,
+    "or-d1": 8,
+    "or-vib": 6,
+    "or-click": 0.6,
+    "or-drive": 0.25
+  }
+}

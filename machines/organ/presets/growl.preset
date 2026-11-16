@@ -1,0 +1,22 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "organ",
+  "note": "Thick and overdriven before it reaches the cabinet",
+  "params": {
+    "or-d16": 8,
+    "or-d513": 8,
+    "or-d8": 8,
+    "or-d4": 8,
+    "or-d223": 6,
+    "or-d2": 6,
+    "or-d135": 4,
+    "or-d113": 4,
+    "or-d1": 6,
+    "or-vib": 2,
+    "or-click": 0.7,
+    "or-drive": 0.8,
+    "or-leak": 0.5,
+    "or-volume": -4
+  }
+}

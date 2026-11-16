@@ -411,6 +411,12 @@ Leave pads alone; they're already even.
   `semi-hollow` for warm clean parts; on bass, `jazz-both`, `p-bass` or
   `hollow`. Roll VOL back to clean up an amp's drive. The `acoustic`
   presets are miked bodies with a little piezo: skip Ampstack for them.
+- **Slap bass is one track.** Fretwire's `slap` preset thumbs the low
+  strings and pops E2 and up, so write the line as plain notes: octaves
+  come out thumb and pop. Velocity is how hard the string meets the fret
+  (under about 50 it only thuds); ghost notes are short notes near 60.
+  HAND moves the split, `thumb` and `pop` are one articulation each, BUZZ
+  is how close the frets sit.
 - `chorus2`: `juno-i` / `juno-ii` for pads and keys. Never on bass or
   kick; it smears the low end out of mono.
 - **Share spaces with sends.** Put a fully wet reverb on a bus and send

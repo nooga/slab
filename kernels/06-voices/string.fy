@@ -6,8 +6,7 @@
     ring read at w - D [Lagrange, 4 taps]
       -> loss shelf [decay per partial]
       -> 16 dispersion allpasses [stiffness: upper partials run sharp]
-      -> optional fret-buzz soft limit
-      -> + excitation  -> ring write at w
+      -> + excitation  -> the frets [a one-sided stop]  -> ring write at w
 
     loop signal - itself pickup-pos periods ago [pickup comb]
       -> pickup resonance [2-pole LP] -> out
@@ -38,8 +37,14 @@
       squared [the velocity follower over f], so a hard pluck starts sharp
       and settles as it decays.  At 0.5 it matches the measured bass: a
       hard low D starts ~50 cents sharp, a D3 ~7.
-    * BUZZ: the loop runs through a soft limit, the string rattling on the
-      frets when it swings wide; it bites only on loud notes.
+    * BUZZ: the frets.  The string's displacement over the last fret
+      cannot pass it; the wave that would carry it past is reflected, so
+      a string that swings wide rattles, each period, until it has lost
+      enough.  BUZZ is how close the frets sit.  SLAP is a thumb's weight
+      behind the pulse: it drives the string onto the fret and is stopped
+      there, which is the click.  A pluck [SHAPE 1] from the far side
+      meets the frets half a period later: a pop.  With SLAP up, notes
+      on the upper half of the strings are popped and the rest thumbed.
 
   A note-on mutes the old note's content: for one loop length the
   feedback is masked, so the ring refills with the new excitation, while
@@ -104,6 +109,16 @@ ustruct: StringState
   f64 wc        ( the index it was written at )
   f64 yb        ( the wave arriving at the bridge this sample )
   f64 fade      ( the old note's read, fading out )
+  ( the frets [BUZZ] )
+  f64 yc        ( string displacement over the last fret, velocity-samples )
+  f64 cd        ( that fret's comb delay, samples )
+  f64 ch        ( the gap to it )
+  f64 cl        ( displacement leak: the string's rest position is found again )
+  f64 tg        ( thumb: the pulse's drive, x a finger's )
+  f64 el        ( thumb: how far it carries the string before the fret stops it )
+  f64 e1 f64 e2 ( thumb: how far the pulse and its echo have carried it )
+  f64 pg        ( pluck: its level with frets in reach, x the free pluck's )
+  f64 shp       ( this note's SHAPE: 1 when SLAP pops it )
 ;
 
 ustruct: StringParams
@@ -140,6 +155,7 @@ ustruct: StringParams
   f64 air        ( the body's radiated sound, mixed in )
   f64 piezo      ( an under-saddle piezo: the bridge force, mixed in )
   f64 symp       ( the open strings ringing in sympathy, 0..1 )
+  f64 slap       ( 0..1 a thumb's weight behind the pulse: it drives the string onto the frets )
   ( the instrument, set by the machine [const-f64] )
   f64 ref-hz     ( the pitch HF DEC, SOFT and THUMP are stated at: the low string )
   f64 b-ref      ( the pitch STIFF's B is stated at )
@@ -319,6 +335,17 @@ dsp: st-string | params:StringParams hz hand -- i |
   w^2, so r solves r[1+r] / [1-r]^3 = 3 B N^3 / [8 pi^2 AP-N], exact in
   the low partials and saturating above w ~ [1-r] / sqrt r. )
 :: THUMP-K 10.0 ;
+:: FRET-END 0.3 ;        ( a 20-fret neck ends 0.315 of the scale from the bridge )
+:: FRET-GAP 0.045 ;      ( gap at BUZZ 0+, x the period, in velocity-samples: a hard finger pluck swings 0.03 )
+:: FRET-GAP-SPAN 0.035 ; ( how much of it BUZZ 1 closes )
+:: THUMB-STOP 0.3 ;      ( the stop takes this share of what is left each sample: flesh over bone, ~70 us )
+:: POP-SOFT 0.15 ;       ( ms: a popped string leaves the finger this fast )
+:: POP-REACH 0.4 ;       ( with frets in reach a pluck pulls the string this many gaps from rest, soft.. )
+:: POP-REACH-V 9.0 ;     ( ..and this many more at full velocity, as its square )
+:: FRET-HARD 0.9 ;      ( share of the overshoot stopped each sample: 1 a rigid fret that sends the wave back whole, 0.5 one that swallows it )
+:: THUMB-K 1.0 ;         ( SLAP 1: the thumb moves the string this much faster than a finger, +1 )
+:: THUMB-REACH 0.5 ;     ( a thumb carries the string this share of the gap past rest, soft.. )
+:: THUMB-REACH-V 0.6 ;   ( ..and this much more at full velocity: the string bends over the fret )
 :: AP-N 16 ;
 :: AP-NF 16.0 ;
 dsp: string-tune | state:StringState params:StringParams -- |
@@ -374,6 +401,12 @@ dsp: string-tune | state:StringState params:StringParams -- |
   cn params.on2 f+ ratio f* 0.5 fmin n f* 1.0 fmax -> state.pn2
   cb params.ob1 f+ ratio f* 0.5 fmin n f* 1.0 fmax -> state.pb1
   cb params.ob2 f+ ratio f* 0.5 fmin n f* 1.0 fmax -> state.pb2
+  ( the frets: the last one sits FRET-END of the open string from the
+    bridge; the gap closes as BUZZ rises.  Displacement here is summed
+    velocity, so a gap is a share of the period. )
+  FRET-END ratio f* 0.5 fmin n f* 2.0 fmax -> state.cd
+  FRET-GAP  params.buzz FRET-GAP-SPAN f* f-  n f* -> state.ch
+  1.0  1.5707963267948966 hz f* sr f/  f- -> state.cl
   ( THUMP: pitch rises with displacement squared, velocity / f )
   params.ref-hz hz f/ dup f*  params.thump f* THUMP-K f* -> state.th-k
 ;
@@ -407,17 +440,35 @@ dsp: string-note-on | ctx:Ctx state:StringState params:StringParams -- |
   leg state.tens 0.0 select -> state.tens
   leg state.xn 0.0 select -> state.xn
   leg state.xb 0.0 select -> state.xb
+  leg state.yc 0.0 select -> state.yc
+  ( SLAP plays the instrument's upper strings popped, a finger under the
+    string, and the lower ones with the thumb: HAND decides which string
+    a note is on, so it decides this too )
+  params.buzz 0.0 f>  params.slap 0.0 f>  and | slapping |
+  slapping  state.si params.n-str 0.5 f* f>=  and | pop |
+  pop 1.0 params.shape select -> state.shp
+  ( a thumb is heavy: a soft slap is slower, but not by as much as a soft pluck )
+  slapping pop not and | thumb |
+  thumb  params.slap THUMB-K f* 1.0 f+  ctx.vel 0.05 1.0 fclamp log2 -0.7 f* exp2 f*  1.0 select -> state.tg
+  ctx.vel THUMB-REACH-V f* THUMB-REACH f+ state.ch f* -> state.el
+  0.0 -> state.e1  0.0 -> state.e2
   leg state.vib-t 0.0 select -> state.vib-t
   leg state.vib 0.0 select -> state.vib
   ctx.vel 0.0001 1.0 fclamp log2 1.3 f* exp2 | a |
   leg  a  up HAMMER-AMP PULL-AMP select f*  a  select -> state.amp
   ( width: soft at low velocity, sharp at high; a fingertip twice as soft )
-  params.soft 0.001 f* params.sr f*  params.ref-hz ctx.hz 20.0 4000.0 fclamp f/ fsqrt f*
+  pop POP-SOFT params.soft select 0.001 f* params.sr f*  params.ref-hz ctx.hz 20.0 4000.0 fclamp f/ fsqrt f*
     1.4 ctx.vel 0.8 f* f-  f*  leg 2.0 1.0 select f*  1.0 fmax | wid |
   1.0 wid f/ -> state.inv-w
   2.0 params.soft f/ fsqrt 0.5 4.0 fclamp -> state.pu-g
   ctx.hz 20.0 4000.0 fclamp | hz |
   params.pos params hz params.hand st-fret f* 0.5 fmin  params.sr hz f/ f* -> state.pd
+  ( a pluck with frets in reach [a pop] is as far as a finger can pull,
+    counted in gaps, never more than the free pluck )
+  params.buzz 0.0 f>
+    ctx.vel dup f* POP-REACH-V f* POP-REACH f+ state.ch f*  state.pd state.amp f* 0.000001 fmax f/  1.0 fmin
+    1.0
+  select -> state.pg
   leg 0.3 1.0 select -> state.nz-env
   -1.0  0.002 wid params.inv-sr f* f+  params.sr f*  f/ exp -> state.nz-k
   state.rng& ctx.chan 3.0 f+ rand-seed-once
@@ -494,8 +545,14 @@ dsp: st-pulse | x iw -- s |  x iw f* 0.0 1.0 fclamp 2.0 f* cospi -0.5 f* 0.5 f+ 
 dsp: string-excite | state:StringState params:StringParams -- e |
   state.et | t |  t state.pd f- | td |  state.inv-w | iw |
   t iw st-step  td iw st-step f- | pl |
-  t iw st-pulse td iw st-pulse f- state.pu-g f* | pu |
-  pl pu f- params.shape f* pu f+  state.amp f*
+  ( a thumb [SLAP]: a heavy pulse that stops dead when it has carried the
+    string to the fret; the stop is the click.  The echo stops the same. )
+  state.pu-g state.tg f* | tg |
+  t iw st-pulse tg f*  state.el state.e1 f- 0.0 fmax THUMB-STOP f*  fmin | ta |
+  td iw st-pulse tg f*  state.el state.e2 f- 0.0 fmax THUMB-STOP f*  fmin | tb |
+  state.e1 ta f+ -> state.e1  state.e2 tb f+ -> state.e2
+  state.tg 1.0 f>  ta tb f-  t iw st-pulse td iw st-pulse f- state.pu-g f*  select | pu |
+  pl state.pg f* pu f- state.shp f* pu f+  state.amp f*
   state.rng& rand-b state.nz-env f* params.noise f* state.amp f*  f+
   state.nz-env state.nz-k f* -> state.nz-env
 ;
@@ -536,22 +593,38 @@ dsp: st-loop | io ctx:Ctx state:StringState params:StringParams -- |
     x xs i f!i  y ys i f!i
     y i 1.0 f+
   ] times drop | y |
-  params.buzz 0.0 f>
-    [ y 3.0 f* tanh-fast 0.3333333333333333 f* y f- params.buzz f* y f+ ]
-    [ y ]
-  ifte | y |
   state params string-excite  state params st-slide-noise f+ | e |
   ( the bridge: the string pushes on it with the wave arriving there, and
     moves with it [string_body.fy] )
   ctx.shared& p@64 | body:FwBody |
   body.vb | vb |
   body.f  y 2.0 f* vb f+ state.z f* f-  -> body.f
-  y e f+ vb f+ | nw |
+  y e f+ vb f+ | nw0 |
+  ( the frets [BUZZ]: the string's displacement over the last fret is the
+    sum of its velocity there, this sample's write less the wave that
+    passed cd samples back.  It cannot pass the fret: what would carry it
+    past is taken out of the wave leaving the fret one way and given to
+    the wave leaving the other, a reflection, the string rattling.  The
+    two waves trade the same amount, so the knock can only lose energy,
+    and FRET-HARD sets how much.  A
+    thumb or a finger pushes the string toward the frets; a pluck [SHAPE
+    past half] lets it go from the far side, so it meets them half a
+    period on. )
+  state.cd floor  d 4.0 f- floor  fmin 1.0 fmax | cdi |
+  w cdi f-  dup 0.0 f< len 0.0 select f+ | ci |
+  buf ci f@i | rc |
+  state.shp 0.5 f> -1.0 1.0 select | side |
+  state.yc state.cl f*  nw0 rc f- side f*  f+ | yf |
+  params.buzz 0.0 f>  state.ch yf f- 0.0 fmin FRET-HARD f*  0.0 select  side f* | x |
+  nw0 x f+ | nw |
+  rc x f-  buf ci f!i
+  yf  x side f* f+ -> state.yc
   nw buf w f!i
   nw -> state.nw
   w -> state.wc
   w 1.0 f+ dup len f>= 0.0 rot select -> state.w
-  state.tens  nw fabs state.tens f- params.tens-a f* f+ -> state.tens
+  ( a thumb's pulse is fast, not far: it counts for no more than a hard pluck )
+  state.tens  nw fabs 1.5 fmin state.tens f- params.tens-a f* f+ -> state.tens
   ( old note fading out while the ring refills )
   r  1.0 t 0.015625 f* f- 0.0 fmax f*  live 0.0 rot select -> state.fade
   t 1.0 f+ -> state.age

@@ -1,0 +1,27 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "echo2",
+  "note": "One short head, one repeat, a little drive",
+  "params": {
+    "echo-length": 0.11,
+    "echo-speed": 1,
+    "echo-sync": 0,
+    "echo-h1": 0,
+    "echo-h2": 0,
+    "echo-h3": 0,
+    "echo-h4": 1,
+    "echo-mode": 0,
+    "echo-spread": 0.0,
+    "echo-repeat": 0.12,
+    "echo-tone": 6500,
+    "echo-drive": 0.45,
+    "echo-freeze": 0,
+    "echo-wow": 0.2,
+    "echo-flutter": 0.3,
+    "echo-hiss": 0.2,
+    "echo-pops": 0.0,
+    "echo-wear": 0.05,
+    "echo-mix": 0.3
+  }
+}

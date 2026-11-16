@@ -6,6 +6,46 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **Rhodes E-Piano barks.** The pickup is refitted to a sampled 1977
+  Mark I: hard notes swing past the pickup and growl, most in the bass,
+  soft ones stay round, the bell ping is as faint as the real one, and
+  notes ring as long as the instrument's. All four presets are redone.
+  DRIVE and BELL mean something different now, so saved Rhodes parts sound
+  different.
+- **Fretwire slaps.** BUZZ is now the frets themselves: a string that
+  swings far enough hits the last fret and rattles. A new SLAP knob is a
+  thumb that drives the string onto the fret, and the `slap` preset plays
+  the low strings thumbed and E2 and up popped from one track; `thumb` and
+  `pop` are each alone. Projects and presets with BUZZ above 0 sound
+  different (it used to be a soft limiter); BUZZ 0 is unchanged.
+- **Fretwire's fingered bass rings like the recording.** The `default`,
+  `p-bass`, `fingers-bridge` and `pick` presets (and the DECAY, HF DEC and
+  KNEE defaults) are refitted to a sampled roundwound bass: the low
+  mids sustain longer and the top dies sooner. Saved projects keep their
+  own knob values; ones that load these presets by name sound different.
+- **Skinwork Kit**: the cymbals and hats are rebuilt as three ringing
+  plates with real nonlinear coupling and no noise. They are bright from
+  the hit, hard hits bloom, a second hit adds to a cymbal that is still
+  ringing, and a closed hat chokes an open one. Kick, snare and tom
+  overtones now die faster than the fundamental. Projects that use the kit
+  will sound different, and each piece's level has been retrimmed.
+- **Magnet Zither**, a new instrument: ten strings in one of seven tunings,
+  plucked from the keys, and two spinning magnet discs that make them drone
+  with no note held. Sweep a disc's SPIN to walk through the tuning's
+  partials. **Magnet Zither FX** is the same strings as an insert that
+  answers the notes in whatever you feed it.
+- **Tape Echo**, a new effect: a tape loop past four playback heads. Short
+  loops are a multi-head echo, SWELL smears the heads into a wash, long
+  loops are sound on sound, and FREEZE holds the tape. Changing SPEED bends
+  the pitch while the motor catches up, with wow, flutter, hiss and pops to
+  taste.
+- **Tonewheel Organ**, a new instrument: 91 wheels that never stop, nine
+  drawbars you can automate, percussion, scanner vibrato and chorus, key
+  click that follows how hard you play, leakage and a preamp drive.
+- **Rotary Speaker**, a new effect: a treble horn and a bass drum turning
+  in front of two microphones. Switch SPEED between STOP, SLOW and FAST
+  and the horn follows in a second while the drum takes four or five.
+
 ## 0.0.23 — 2026-11-04
 
 - **Notes don't get stuck.** A note no longer hangs when you edit a clip

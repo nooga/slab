@@ -19,6 +19,13 @@ include "../lib/manifest.fy"
   note-pitch
   KitState.size  state-size!
   KitParams.size params-size!
+  ( the cymbals are three plates in the shared region, each with its own
+    word that sleeps until it is hit [docs/04 gated words] )
+  KpShared.size shared-size!  1 shared-period!
+  "k-kit-hat"   KpShared.gate shared-gated!
+  "k-kit-crash" KpShared.gate 8 + shared-gated!
+  "k-kit-ride"  KpShared.gate 16 + shared-gated!
+  KitState.vlvl voice-level!
   36 "KICK" note-label  38 "SNARE" note-label  37 "SIDE" note-label
   41 "LT" note-label  45 "MT" note-label  48 "HT" note-label
   42 "CH" note-label  44 "PH" note-label  46 "OH" note-label

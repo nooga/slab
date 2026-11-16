@@ -1,0 +1,16 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "zither",
+  "note": "Strings tuned to the partials of D1 with the disc at D1: every string in reach blooms; pluck over it from the keys",
+  "params": {
+    "zi-tuning": 6,
+    "zi-ring": 22,
+    "zi-tone": 0.5,
+    "zi-a-on": 1,
+    "zi-a-spin": 36.71,
+    "zi-a-height": 0.3,
+    "zi-a-across": 0.5,
+    "zi-a-along": 0.22
+  }
+}

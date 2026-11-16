@@ -34,6 +34,8 @@ pub const MAX_ROW_CELLS = 16;
 pub const MAX_CELL_ITEMS = 6;
 pub const MAX_NOTE_LABELS = 32;
 pub const MAX_BUFFERS = 8;
+/// Gated shared words a machine may declare (docs/04 §Shared state).
+pub const MAX_GATED = 4;
 pub const MAX_ASSETS = 4;
 pub const MAX_PATH = 128;
 /// Largest shared region a machine may ask for (docs/04 §Shared state).
@@ -412,6 +414,12 @@ pub const Desc = struct {
     shared_word: [MAX_WORD]u8 = @splat(0),
     shared_word_len: usize = 0,
     shared_period: usize = 0,
+    /// More render words over the shared region, each asleep until the
+    /// f64 at its `gate` byte offset in the region is set nonzero.
+    gated_word: [MAX_GATED][MAX_WORD]u8 = @splat(@splat(0)),
+    gated_word_len: [MAX_GATED]usize = @splat(0),
+    gated_gate: [MAX_GATED]usize = @splat(0),
+    gated_count: usize = 0,
     /// State byte offset + 1 of the f64 a voice keeps at its own level,
     /// which idling watches besides its output; 0 = output only.
     voice_level_sel: usize = 0,
@@ -584,7 +592,10 @@ const MachineDescRaw = extern struct {
     shared_period: Fy.Value,
     shared_size: Fy.Value,
     voice_level: Fy.Value,
+    gated: Fy.Value,
 };
+
+const GatedRaw = extern struct { next: Fy.Value, word: Fy.Value, gate: Fy.Value };
 
 const ModRaw = extern struct { next: Fy.Value, kind: Fy.Value, name: Fy.Value, index: Fy.Value, offset: Fy.Value, flag: Fy.Value };
 
@@ -726,6 +737,16 @@ pub fn read(host: *FyHost) !Desc {
     if (d.shared_size > MAX_SHARED) return error.InvalidMachineDesc;
     if (d.shared_word_len > 0 and (d.mode != .voice_sample or d.shared_period == 0 or d.shared_size == 0))
         return error.InvalidMachineDesc;
+    var gated_it = rawPtr(GatedRaw, md.gated);
+    while (gated_it) |g| : (gated_it = rawPtr(GatedRaw, g.next)) {
+        if (d.gated_count >= MAX_GATED) return error.InvalidMachineDesc;
+        const gate = asInt(g.gate);
+        if (d.mode != .voice_sample or d.shared_period == 0 or gate < 0 or @as(usize, @intCast(gate)) + 8 > d.shared_size)
+            return error.InvalidMachineDesc;
+        d.gated_word_len[d.gated_count] = try copyBuf(d.gated_word[d.gated_count][0..], cstrSlice(g.word));
+        d.gated_gate[d.gated_count] = @intCast(gate);
+        d.gated_count += 1;
+    }
     d.voice_level_sel = @intCast(@max(0, asInt(md.voice_level)));
     // derive-data is an opaque heap pointer (fy `alloc` returns the raw address
     // as a tagged int); >>2 recovers it. 0 = none.

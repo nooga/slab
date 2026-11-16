@@ -1,0 +1,9 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "rotary",
+  "note": "Rotors stopped: the cabinet's tone with no motion; automate SPEED from here",
+  "params": {
+    "ro-speed": 0
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "rotary",
+  "note": "Mostly horn, deep bend, for guitars and electric pianos",
+  "params": {
+    "ro-speed": 1,
+    "ro-slow": 1.4,
+    "ro-fast": 8.0,
+    "ro-balance": 0.7,
+    "ro-depth": 1.0,
+    "ro-drive": 0.0
+  }
+}

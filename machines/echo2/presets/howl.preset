@@ -1,0 +1,27 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "echo2",
+  "note": "REPEAT past 1: the loop feeds itself and howls, held by the tape curve. Ride SPEED",
+  "params": {
+    "echo-length": 0.26,
+    "echo-speed": 1,
+    "echo-sync": 0,
+    "echo-h1": 0,
+    "echo-h2": 0,
+    "echo-h3": 1,
+    "echo-h4": 1,
+    "echo-mode": 1,
+    "echo-spread": 0.7,
+    "echo-repeat": 1.08,
+    "echo-tone": 3000,
+    "echo-drive": 0.6,
+    "echo-freeze": 0,
+    "echo-wow": 0.35,
+    "echo-flutter": 0.3,
+    "echo-hiss": 0.4,
+    "echo-pops": 0.2,
+    "echo-wear": 0.25,
+    "echo-mix": 0.3
+  }
+}

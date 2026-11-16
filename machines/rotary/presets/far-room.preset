@@ -1,0 +1,11 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "rotary",
+  "note": "Microphones well back: more wall than swing",
+  "params": {
+    "ro-speed": 1,
+    "ro-mic": 1.0,
+    "ro-spread": 0.2
+  }
+}

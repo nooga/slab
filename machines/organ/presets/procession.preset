@@ -1,0 +1,19 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "organ",
+  "note": "A hollow, stately tone for slow descending lines",
+  "params": {
+    "or-d16": 6,
+    "or-d513": 8,
+    "or-d8": 8,
+    "or-d4": 6,
+    "or-d223": 0,
+    "or-d2": 0,
+    "or-d135": 0,
+    "or-d113": 0,
+    "or-d1": 0,
+    "or-vib": 4,
+    "or-click": 0.3
+  }
+}

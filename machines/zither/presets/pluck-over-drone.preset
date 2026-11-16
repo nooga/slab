@@ -1,0 +1,19 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "zither",
+  "note": "A low disc keeps the minor tuning humming; plucks ring over it",
+  "params": {
+    "zi-tuning": 1,
+    "zi-ring": 16,
+    "zi-tone": 0.45,
+    "zi-pluck": 0.25,
+    "zi-damp": 0,
+    "zi-a-on": 1,
+    "zi-a-spin": 36.71,
+    "zi-a-height": 0.45,
+    "zi-a-across": 0.25,
+    "zi-a-along": 0.3,
+    "zi-b-on": 0
+  }
+}

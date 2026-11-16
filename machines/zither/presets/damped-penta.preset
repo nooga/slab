@@ -1,0 +1,15 @@
+{
+  "slab": "preset",
+  "schema": 1,
+  "machine": "zither",
+  "note": "Short damped plucks on the pentatonic tuning, near the bridge",
+  "params": {
+    "zi-tuning": 2,
+    "zi-ring": 4,
+    "zi-tone": 0.7,
+    "zi-pluck": 0.08,
+    "zi-damp": 1,
+    "zi-a-on": 0,
+    "zi-b-on": 0
+  }
+}
