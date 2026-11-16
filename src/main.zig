@@ -4578,6 +4578,11 @@ const Stall = struct {
 };
 
 test "Stall flags a render that stops advancing, not one that finishes" {
+    // It stalls on purpose; its warning would read as a failure in the
+    // build runner's output.
+    const level = std.testing.log_level;
+    std.testing.log_level = .err;
+    defer std.testing.log_level = level;
     var s: Stall = .{};
     const t0: i128 = 1000;
     try std.testing.expect(!s.checkAt(t0, 100, 1000, "t"));

@@ -73,9 +73,25 @@ fn debugSlice(mem: []u8, len: usize) void {
     w.writeAll("\n") catch {};
 }
 
+/// Under test, fy's output and `run`'s compile errors are silent unless
+/// FY_TEST_VERBOSE is set: many tests expect an error, and the build runner
+/// shows any stderr as a `failed command`, even when every test passes.
+pub fn testVerbose() bool {
+    return std.c.getenv("FY_TEST_VERBOSE") != null;
+}
+
+/// The last compile error `run` kept quiet under test, for a failing test
+/// to print.
+var test_error_buf: [512]u8 = undefined;
+var test_error_len: usize = 0;
+
+pub fn lastTestError() []const u8 {
+    return test_error_buf[0..test_error_len];
+}
+
 inline fn outPrint(comptime fmt: []const u8, args: anytype) void {
     if (builtin.is_test) {
-        compat.stderrWriter().print(fmt, args) catch {};
+        if (testVerbose()) compat.stderrWriter().print(fmt, args) catch {};
     } else {
         compat.stdoutWriter().print(fmt, args) catch {};
     }
@@ -8061,6 +8077,7 @@ pub const Fy = struct {
     }
 
     pub fn runWithBaseDir(self: *Fy, src: []const u8, base_dir: ?[]const u8) !Fy.Value {
+        test_error_len = 0;
         // Set fyPtr for Builtins to access heap
         Builtins.fyPtr = @intFromPtr(self);
 
@@ -8080,7 +8097,9 @@ pub const Fy = struct {
             return x;
         } else |err| {
             if (compiler.lastErrorStr()) |detail| {
-                errPrint("line {d}: {s}\n", .{ parser.line, detail });
+                if (builtin.is_test and !testVerbose()) {
+                    test_error_len = if (std.fmt.bufPrint(&test_error_buf, "line {d}: {s}", .{ parser.line, detail })) |m| m.len else |_| 0;
+                } else errPrint("line {d}: {s}\n", .{ parser.line, detail });
             }
             return err;
         }
