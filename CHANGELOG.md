@@ -6,6 +6,8 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+## 0.0.24 — 2026-11-16
+
 - **Rhodes E-Piano barks.** The pickup is refitted to a sampled 1977
   Mark I: hard notes swing past the pickup and growl, most in the bass,
   soft ones stay round, the bell ping is as faint as the real one, and
