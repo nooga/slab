@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Slab · Listening room</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header><a href="/" class="brand">SLAB <span>/ LISTENING ROOM</span></a><span id="saveStatus" role="status">Connecting…</span></header>
+<main>
+<div class="heading"><h1>Which sounds closer?</h1><button id="export" class="quiet">Export labels</button></div>
+<p class="intro">Match the reference. Choose A, B, or no audible difference.</p>
+<div id="error" role="alert" hidden></div>
+<section id="test" aria-label="Blind comparison" hidden>
+<div class="test-meta"><span id="counter"></span><span>BLIND A/B · 4.5 SEC</span></div>
+<div id="progress" aria-label="Test navigation"></div>
+<div class="deck">
+<button class="play reference" data-play="reference"><span class="play-name">Reference</span><span class="play-detail">The sound to match <kbd>R</kbd></span></button>
+<div class="candidates"><button class="play" data-play="A"><span class="play-name">A</span><span class="play-detail">Play candidate <kbd>1</kbd></span></button><button class="play" data-play="B"><span class="play-name">B</span><span class="play-detail">Play candidate <kbd>2</kbd></span></button></div>
+<div class="volume"><label for="volume">Listening volume</label><input id="volume" type="range" min="-12" max="24" step="1" value="12" aria-describedby="volumeHint"><output id="volumeValue" for="volume">+12 dB</output></div>
+<p id="volumeHint">Shared gain for reference, A and B. Peak protection prevents clipping.</p>
+<div class="transport"><button id="sequence">Play reference / A / reference / B</button><button id="stop" class="quiet">Stop <kbd>Space</kbd></button><span id="clock">0.0 / 4.5 s</span></div>
+<div class="timeline"><div id="playhead"></div></div>
+<p id="playing" role="status">Ready to listen. Each button plays from the start.</p>
+</div>
+<div class="decision-label"><span>Your choice</span><span>Saved immediately · advances to next pair</span></div>
+<div class="choices"><button data-choice="A">A is closer <kbd>A</kbd></button><button data-choice="B">B is closer <kbd>B</kbd></button><button data-choice="tie">No difference <kbd>T</kbd></button></div>
+<div class="bottom"><button id="previous" class="quiet">Previous</button><span id="currentChoice"></span><button data-choice="skip" class="quiet">Skip for now <kbd>S</kbd></button></div>
+</section>
+<section id="complete" hidden><div class="complete-mark">SESSION COMPLETE</div><h2>Thanks. Your labels are saved.</h2><p id="summary"></p><button id="review">Review comparisons</button><button id="retrySkipped" class="quiet" hidden>Return to skipped pairs</button></section>
+<footer><span id="pairCount">Blind pairs</span> · candidate identities stay hidden · relative playback levels preserved<br>Use headphones if convenient. You can revisit and change any answer.</footer>
+</main><script src="/app.js"></script>
+</body></html>

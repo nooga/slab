@@ -54,6 +54,10 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
   (±12 semitones) shifts a tuned clip's resonances without changing its
   pitch: up for a thinner, synthetic voice, down for a darker one.
   slabkit: `audio(…, tune=…, formant=3)`.
+- Add an experimental sound-matching dataset generator with paired Slab
+  projects, correction labels, generation timing and disk-space guards,
+  plus local correction-model training, controlled ablations, auraloss-guided
+  parameter refinement and a local web app for fast blind listening labels.
 
 ## 0.0.23 — 2026-11-04
 
