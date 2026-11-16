@@ -45,6 +45,11 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 - **Rotary Speaker**, a new effect: a treble horn and a bass drum turning
   in front of two microphones. Switch SPEED between STOP, SLOW and FAST
   and the horn follows in a second while the drum takes four or five.
+- **Tune no longer roughens a voice.** A tuned voice kept a gritty,
+  bad-microphone edge in its upper harmonics; it now sounds as clean as
+  the take (harmonics-to-noise at or above the source's on speech, from
+  up to 2.6 dB below). Analysing a take for Tune takes about a third
+  longer the first time.
 
 ## 0.0.23 — 2026-11-04
 

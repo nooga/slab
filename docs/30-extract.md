@@ -457,11 +457,18 @@ and VOICE, so a tuned clip plays live like a warped one:
   mark nearest where the maps put it, and read at the source's own
   speed. That is why the formants stay where they were and the voice
   doesn't turn into a chipmunk.
-- Pitch marks are found on the worker with the pitch: one a period,
-  each on the waveform's highest peak within a quarter period of where
-  the last one's period puts it, refined between samples by a
-  parabola. Without that refinement the grains jitter by up to half a
-  sample, and the noise between the harmonics rises to −34 dB.
+- Pitch marks are found on the worker with the pitch: one a period.
+  The first is on the waveform's highest peak; each next is within a
+  quarter period of where the last one's period puts it, where the
+  waveform best matches the period just marked (normalized
+  cross-correlation), refined between samples by a parabola through the
+  match scores, and carrying the last mark's fraction so the marks
+  don't drift. Marking the highest peak instead jumps between the
+  near-equal ripples on a voice's crest, and grains a few percent of a
+  period off put the upper harmonics out of phase from grain to grain:
+  heard as grit, seen as noise between the harmonics above 1.5 kHz.
+  Without the refinement the grains jitter by up to half a sample, and
+  the noise between the harmonics rises to −34 dB.
 - Unsung frames get 10 ms grains 5 ms apart, at the source's pitch.
 - A warped clip's time comes from its map, so Tune replaces its MODE's
   stretching while it is on, and TRANSPOSE and FINE still apply. An
