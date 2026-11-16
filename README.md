@@ -8,44 +8,112 @@ effect is a short file you can open and change.**
 ![Slab: the arrangement, the piano roll and the Mog Passenger synth](docs/images/slab.png)
 
 Slab (the Slab Audio Workstation) is a complete place to make music: lay
-out a song, write parts in the piano roll, play twelve instruments through
-fifteen effects, automate anything, and mix it down to a WAV. It looks
-like a rack of 2000s studio hardware and runs like native code, because
-it is.
+out a song, write parts in the piano roll or record them, play twenty
+instruments through twenty-eight effects, automate anything, and mix it
+down to a WAV, FLAC or MP3. It looks like a rack of 2000s studio hardware
+and runs like native code, because it is.
 
 ## What you get
 
-- **Twelve instruments with a lineage.** Each is modeled on the instrument
-  it's named after:
+### Twenty instruments
+
+Each is modeled on the instrument it's named after, or built from the
+physics of one.
+
+- **Analog and virtual-analog synths**
   - **Mog Passenger**, after the Moog Prodigy and Messenger: three
     oscillators into a driven transistor ladder
+  - **SM-24 Mono**, after the Korg MS-20: its two screaming filters and
+    a patch panel
+  - **Squelch 33**, after the Roland TB-303: an acid bassline synth
+  - **Profit-5**, after the Sequential Prophet-5, with POLY-MOD
+  - **Ju-Know**, after the Roland Juno: a DCO polysynth with its chorus
+  - **Juniper-8**, after the Roland Jupiter-8: two VCOs with cross mod
+    and sync into a 24/12 dB filter
+  - **C-Beam 80**, after the Yamaha CS-80: two voices a note, poly
+    aftertouch, and every factory preset
+  - **Ambika**, after Mutable Instruments' six-voice polysynth
+- **Digital synths**
   - **FM-7.11**, after the Yamaha DX7: six operators and 32 algorithms;
     it opens your own `.syx` cartridges
-  - **Ju-Know**, after the Juno: a DCO polysynth with its chorus
-  - **Profit-5**, after the Prophet-5, with POLY-MOD
-  - **SM-24 Mono**, after the MS-20 and its screaming filters
   - **Concoction**, a wavetable synth that reads Serum tables, with a
     wavetable editor
   - **Unfairlight TMI**, after the Fairlight CMI: any sample becomes
     8-bit voice RAM, grit included
+- **Physical models**
+  - **Hammerwork Grand**, a piano of felt hammers on modal strings
+  - **Rhodes E-Piano**, tines and a pickup fitted to a sampled Mark I
+  - **Tonewheel Organ**, 91 wheels, nine drawbars, percussion, scanner
+    vibrato and key click
+  - **Fretwire** bass and **Fretwire Guitar**: waveguide strings with
+    pickups and bodies, played with fingers, a pick, slap or pop, with
+    bends, slides, hammer-ons and finger vibrato
+  - **Skinwork Kit**, a drum kit of struck membranes and coupled
+    cymbal plates
+  - **Magnet Zither**, ten strings plucked from the keys or set
+    droning by two spinning magnet discs
+- **Drums and samples**
   - **DS-404**, an 808/909-style drum machine
-  - **Rhodes**, a modeled electric piano
-  - **Fretwire** bass and guitar, physically modeled strings: fingers,
-    pick, slap and pop, and pitch curves that bend or slide fret by fret
-  - **Sampler**, for WAV, FLAC, SFZ and folder kits
-- **Sixteen effects:** EQ, graphic EQ, compressor, bus compressor,
-  multiband, a character compressor, saturator, tape, chorus, delay,
-  reverb, gate, limiter, an era (lo-fi) box, a funk overdrive and an
-  amp with its cabinet for bass and guitar.
-- **Sounds that are yours to use.** Factory presets, an FM bank designed
-  from scratch, a sampled-voice bank for the Unfairlight, two pianos,
-  string sections, trumpet and trombone, two sampled basses, an electric
-  guitar, an alto sax and three drum kits. All CC0: use them in any
-  music, no credit owed.
-- **A real studio around them.** Arrangement with clips and folding
-  groups, a piano roll with velocity, per-note pitch, pressure and
-  slide, automation lanes you can record, buses, sends, sidechain,
-  delay compensation, unison on any synth, undo, and export.
+  - **Sampler**, for WAV, FLAC, AIFF, SFZ and folder kits
+
+### Twenty-eight effects
+
+- **EQ and dynamics:** EQ, GEQ (eight bands with a spectrum display),
+  Comp, Bus compressor, Multi (multiband, up to OTT), Char (FET, opto,
+  vari-mu and SMUSH), Gate and Limiter.
+- **Color and drive:** Saturator, Tape (cassette and VHS), Era (sampler
+  converters from the SP-1200 to the MPC60), Funk Overload, Grinder,
+  Folder, Octaver, and Ampstack, an amp and cabinet for bass and guitar.
+- **Movement and space:** Chorus, Phaser, Wobble, Rotary Speaker,
+  Delay, Tape Echo, Verb (plate, room and hall) and CONVO, a
+  convolution reverb that takes any WAV as its space.
+- **Stranger things:** Buffer Loom (grains and repeats from live
+  input), Modal Bank (a tuned resonator), Sideband (frequency shifter
+  and ring modulator) and Magnet Zither FX (the zither's strings,
+  driven by your audio).
+
+Any chain of these can go into a **Rack** or **FX Rack**: lanes in
+parallel, eight macro knobs, and rigs saved as presets.
+
+### A studio around them
+
+- **Arrange.** Up to 32 tracks, including buses. Clips and folding
+  groups, sections and locators, tempo changes and ramps, meters, groove
+  and swing, polymeter and polytempo per track, a metronome.
+- **Write notes.** A piano roll with velocity and per-note pitch,
+  pressure and slide, scale marks, octave echoes and readable drum lanes;
+  one set of editing gestures across every editor.
+- **Play.** MIDI keyboards and pads, with LEARN for knobs; the computer
+  keyboard as a piano, a grid of fourths or chords; an arpeggiator on
+  any instrument; unison on any synth.
+- **Record and edit audio.** Record from any input, mono or stereo.
+  Warp clips with five stretch modes, find hits and tempos, quantize a
+  take, let the song follow a live drummer, slice a loop to a sampler,
+  and put a voice in key with Tune, which can also move its formants.
+- **Turn audio into music.** Hum or sing into notes, hear a clip's
+  chords, turn a drum loop into a kit part, and split a song into stems
+  (the stem model is a download).
+- **Mix.** Automation lanes you can draw or record, sends, sidechain
+  keys, groups, delay compensation, and a loudness stage for the master.
+- **Finish.** Bounce a selection, freeze a track, and export the mix,
+  stems or sections to WAV, AIFF, FLAC, ALAC, AAC or MP3 with dither
+  and a loudness report.
+- **Don't lose work.** Autosave and crash recovery, fast undo, logs, and
+  an update check against GitHub releases.
+
+### Sounds, quality, and code you can open
+
+- **Sounds that are yours to use.** Factory presets for nearly every machine,
+  an FM bank designed from scratch, a sampled-voice bank for the
+  Unfairlight, and sampled instruments: grand and upright pianos,
+  harpsichord, an FM piano, marimba, kalimba and ocarina; violin, viola
+  and cello sections, pizzicato contrabass, trumpet and trombone; two
+  electric basses, an electric guitar and an alto sax; and three drum
+  kits. All CC0: use them in any music, no credit owed.
+- **More sounds when you want them.** Download the Versilian Community
+  Sample Library (6 GB), the Versilian Chamber Orchestra, Karoryfer's
+  instruments or classic drum machine packs from inside the app, all
+  free, or bring your own Fairlight disks.
 - **Sound quality first.** 64-bit audio from oscillator to master,
   filters oversampled where they distort, and renders that come out
   bit-identical however many cores they use.
@@ -54,10 +122,9 @@ it is.
 - **Change anything.** Every instrument and effect is a text file in
   Slab's own language, fy. Open one, change the filter, save, and the
   next copy you load has the new filter, without restarting Slab and
-  without a plugin SDK. Changing one while it plays is on the way.
-- **More sounds when you want them.** Download the Versilian Community
-  Sample Library (6 GB, free) or classic drum machine packs from inside
-  the app, or bring your own Fairlight disks.
+  without a plugin SDK. Put your own machines in
+  `~/Music/Slab/Machines` and they appear beside the factory ones.
+  Changing a machine while it plays is on the way.
 
 ![The mixer: 29 tracks into buses, with an EQ open](docs/images/mixer.png)
 

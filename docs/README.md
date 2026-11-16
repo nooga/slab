@@ -10,8 +10,10 @@ musical brief through a runnable sketch, GEQ, routing, automation and export.
 in more depth; [slabkit](../tools/slabkit/README.md) is the Python API cheat sheet.
 
 **Current releases:** [CHANGELOG.md](../CHANGELOG.md). The working beta has
-32 tracks including buses, shared sends, sidechains, clip automation,
-per-note expression and headless mix/stem export. For current machine
+20 instruments and 28 effects (plus Rack and FX Rack), 32 tracks including
+buses, shared sends, sidechains, clip automation, per-note expression,
+audio recording, warp and Tune, and headless mix/stem export. The
+[README](../README.md#what-you-get) lists what's in. For current machine
 controls use [20-machine-reference.md](20-machine-reference.md) or
 `slab --describe`; limits and serialization are in docs/19 and the source.
 
