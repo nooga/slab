@@ -151,6 +151,9 @@ status and the source before assuming a feature is absent or complete.
 51. [50-authoring-wishlist.md](50-authoring-wishlist.md) — proposals for
     the `dsp:` language, the machine model and the bench, from building
     the Magnet Zither (not built)
+52. [51-modular.md](51-modular.md) — modular mode (proposal): modules on
+    rails patched with cables, played as a device on a track; poly
+    cables, module kernels, existing machines as modules, the PATCH page
 53. [52-organ-rotary.md](52-organ-rotary.md) — the Tonewheel Organ (shared
     wheels, key contacts, percussion, scanner vibrato) and the Rotary
     Speaker (two rotors with inertia, Doppler, two microphones)
