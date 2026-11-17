@@ -231,6 +231,7 @@ pub fn serialize(
             var ib: [8]u8 = undefined;
             try appendFmt(alloc, &out, ",\"input\":\"{s}\"", .{t.rec_input.label(&ib)});
         }
+        if (!t.isBus() and t.midi_channel != 0) try appendFmt(alloc, &out, ",\"midi\":{d}", .{t.midi_channel});
 
         // Instrument: stable id + inline settings, or null.
         try out.appendSlice(alloc, ",\"instrument\":");
@@ -1219,6 +1220,11 @@ fn parseTrack(alloc: std.mem.Allocator, reg: *registry_mod.Registry, to: std.jso
     if (strOf(objGet(to, "input"))) |txt| if (@TypeOf(t.rec_input).parse(txt)) |in| {
         t.rec_input = in;
     };
+    if (objGet(to, "midi")) |x| {
+        const ch = asF64(x);
+        // Out of range reads as the default, playing only while selected.
+        if (ch >= 1 and ch <= 16) t.midi_channel = @intFromFloat(ch);
+    }
     if (strOf(objGet(to, "kind"))) |k| if (std.mem.eql(u8, k, "bus")) {
         t.kind = .bus;
     };
@@ -1610,6 +1616,7 @@ test "project snapshot round-trips tracks clips notes and loop" {
     tracks[0].mute.store(true, .monotonic);
     tracks[0].stem = .{ .on = false, .channels = 2 };
     tracks[0].rec_input = .{ .first = 2, .stereo = true };
+    tracks[0].midi_channel = 10;
     var xs = export_settings.Settings{};
     xs.recipe.container = .flac;
     xs.artist.set("nooga");
@@ -1640,6 +1647,8 @@ test "project snapshot round-trips tracks clips notes and loop" {
     try std.testing.expectEqual(@as(usize, 1), loaded_count);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "\"input\":\"3-4\"") != null);
     try std.testing.expectEqual(tracks[0].rec_input, loaded_buf[0].rec_input);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"midi\":10") != null);
+    try std.testing.expectEqual(@as(u8, 10), loaded_buf[0].midi_channel);
     try std.testing.expectEqualStrings("Track 1", loaded_buf[0].name());
     try std.testing.expectEqual(@as(u8, 10), loaded_buf[0].color.r);
     try std.testing.expectEqual(true, loaded_buf[0].mute.load(.monotonic));

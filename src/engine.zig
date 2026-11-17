@@ -204,10 +204,11 @@ pub const Engine = struct {
     aud_q: [AUD_Q]AudEvent = undefined,
     aud_w: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     aud_r: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    /// Audio thread: the track the held notes play on, which they are,
-    /// and this block's note events for it.
+    /// Audio thread: the track keys last arrived on (the one a stopped
+    /// audition plays alone) and this block's note events. The keys each
+    /// track holds are its `keys_held`: several tracks hold keys at once
+    /// when live MIDI plays them by channel (docs/44 §Channels).
     aud_track: ?u8 = null,
-    aud_held: [2]u64 = .{ 0, 0 },
     aud_ev: [AUD_EV]machine.NoteEvent = undefined,
     aud_ev_track: [AUD_EV]u8 = undefined,
     aud_n: usize = 0,
@@ -260,6 +261,8 @@ pub const Engine = struct {
     ring_from: u64 = 0,
     ring_pos: u64 = 0,
     ring_quiet: u64 = 0,
+    /// Samples rung since keys were last held: the never-quiet limit.
+    ring_free: u64 = 0,
 
     /// Master bus. Audio tracks accumulate (planar) into master_l/r, then
     /// the master Track's FX chain + fader run before the interleaved
@@ -537,6 +540,29 @@ pub const Engine = struct {
         return true;
     }
 
+    /// Tracks renumbered (moved or deleted, `map` old → new, NONE for
+    /// gone), audio stopped: key events still queued go to the track
+    /// they were sent for, so a release isn't lost on its old index and
+    /// the key left stuck. A deleted track's events are dropped.
+    pub fn remapHeld(self: *Engine, map: *const [routing.MAX_TRACKS]u8) void {
+        const gone = std.math.maxInt(u8);
+        const to = struct {
+            fn f(m: *const [routing.MAX_TRACKS]u8, t: u8) u8 {
+                return if (t < routing.MAX_TRACKS and m[t] != routing.NONE) m[t] else gone;
+            }
+        }.f;
+        var r = self.aud_r.load(.monotonic);
+        const w = self.aud_w.load(.monotonic);
+        while (r != w) : (r +%= 1) {
+            const e = &self.aud_q[r % AUD_Q];
+            e.track = to(map, e.track);
+        }
+        inline for (.{ &self.aud_track, &self.aud_on }) |p| if (p.*) |t| {
+            const n = to(map, t);
+            p.* = if (n == gone) null else n;
+        };
+    }
+
     /// Audio thread, once per callback: this block's held-note events.
     fn drainHeld(self: *Engine) void {
         self.aud_n = 0;
@@ -545,17 +571,17 @@ pub const Engine = struct {
         while (r != w) : (r +%= 1) {
             const e = self.aud_q[r % AUD_Q];
             if (e.track >= self.tracks.len) continue;
-            if (self.aud_track) |cur| if (cur != e.track) self.releaseHeld();
             self.aud_track = e.track;
+            const held = &self.tracks[e.track].keys_held;
             const word = e.pitch / 64;
             const bit = @as(u64, 1) << @intCast(e.pitch % 64);
-            const was = self.aud_held[word] & bit != 0;
+            const was = held[word] & bit != 0;
             if (e.on == was) continue;
-            if (e.on) self.aud_held[word] |= bit else self.aud_held[word] &= ~bit;
+            if (e.on) held[word] |= bit else held[word] &= ~bit;
             self.pushHeld(e.track, e.pitch, e.on, e.velocity);
         }
         self.aud_r.store(r, .release);
-        if (self.aud_held[0] | self.aud_held[1] != 0 or self.aud_n > 0) {
+        if (self.anyHeld() or self.aud_n > 0) {
             self.aud_live = true;
             self.aud_quiet = 0;
             self.aud_rang = 0;
@@ -576,15 +602,16 @@ pub const Engine = struct {
         self.aud_n += 1;
     }
 
-    /// Let go of every held note (the editor moved to another track).
-    fn releaseHeld(self: *Engine) void {
-        const t = self.aud_track orelse return;
-        for (0..128) |pi| {
-            const bit = @as(u64, 1) << @intCast(pi % 64);
-            if (self.aud_held[pi / 64] & bit == 0) continue;
-            self.pushHeld(t, @intCast(pi), false, 0);
-        }
-        self.aud_held = .{ 0, 0 };
+    /// Some track holds a key.
+    fn anyHeld(self: *const Engine) bool {
+        for (self.tracks) |*t| if (t.keys_held[0] | t.keys_held[1] != 0) return true;
+        return false;
+    }
+
+    /// A track other than `ti` holds a key.
+    fn heldElsewhere(self: *const Engine, ti: u8) bool {
+        for (self.tracks, 0..) |*t, i| if (i != ti and t.keys_held[0] | t.keys_held[1] != 0) return true;
+        return false;
     }
 
     /// Run the track's note slot (docs/45) over this block's events, in
@@ -660,7 +687,7 @@ pub const Engine = struct {
 
     /// The keys the editor holds on track `ti` now.
     fn heldOn(self: *const Engine, ti: u8) [2]u64 {
-        return if (self.aud_track == ti) self.aud_held else .{ 0, 0 };
+        return if (ti < self.tracks.len) self.tracks[ti].keys_held else .{ 0, 0 };
     }
 
     /// Put this block's held-note events for track `ti` ahead of its own.
@@ -834,7 +861,7 @@ pub const Engine = struct {
         if (self.panic_request.swap(false, .acquire)) {
             self.ringing = false;
             self.resetAllMachines();
-            self.aud_held = .{ 0, 0 };
+            for (self.tracks) |*t| t.keys_held = .{ 0, 0 };
             self.aud_live = false;
             self.aud_on = null;
             for (self.tracks) |*t| t.clearSounding();
@@ -852,7 +879,7 @@ pub const Engine = struct {
                 for (self.tracks) |*t| t.clearSounding();
                 // The editor's held keys play on through the stop (nothing
                 // ended them, nothing starts them twice): still lit.
-                if (self.aud_track) |at| if (at < self.tracks.len) self.tracks[at].setSounding(self.aud_held);
+                for (self.tracks) |*t| if (t.keys_held[0] | t.keys_held[1] != 0) t.setSounding(t.keys_held);
                 self.was_playing = false;
                 self.startRing(self.played_to);
                 self.stop_released = false;
@@ -1106,23 +1133,26 @@ pub const Engine = struct {
     /// Stopped, tails ringing: the whole graph renders from the stop with
     /// no new notes or clips, until the output has been under RING_FLOOR
     /// for RING_QUIET_S. A ring that never falls quiet (a drone, a held
-    /// key's machine that ignores note-off) fades out over one block at
-    /// RING_MAX_S.
+    /// key's machine that ignores note-off) fades out over one block
+    /// RING_MAX_S after the last key was let go.
     fn startRing(self: *Engine, from: u64) void {
         self.ringing = true;
         self.ring_from = from;
         self.ring_pos = from;
         self.ring_quiet = 0;
+        self.ring_free = 0;
     }
 
     /// Stopped, keys played on track `aud_track` this block: whether they
     /// need the whole graph (renderRing) rather than the track alone. They
     /// do when it feeds a bus (an output or a send), when a key let go on
-    /// another track must reach it, or when another track's audition is
-    /// still ringing.
+    /// another track must reach it, when another track's audition is
+    /// still ringing, or when another track holds keys too (live MIDI by
+    /// channel, docs/44 §Channels).
     fn auditionNeedsGraph(self: *Engine) bool {
         const ti = self.aud_track orelse return false;
         for (self.aud_ev_track[0..self.aud_n]) |tt| if (tt != ti) return true;
+        if (self.heldElsewhere(ti)) return true;
         if (self.aud_on) |on| if (on != ti) return true;
         var fallback: routing.Routing = undefined;
         const graph = self.currentGraph(&fallback);
@@ -1140,11 +1170,15 @@ pub const Engine = struct {
             self.ring_pos += chunk;
         }
         const sr: u64 = self.transport.sample_rate;
-        const held = self.aud_held[0] | self.aud_held[1] != 0;
+        const held = self.anyHeld();
         if (held or peakInterleaved(out) > RING_FLOOR) self.ring_quiet = 0 else self.ring_quiet += n;
+        // The never-quiet limit counts from the last release: keys held
+        // past it (live MIDI on several tracks rings through here) would
+        // otherwise have their release tail cut the moment they let go.
+        if (held) self.ring_free = 0 else self.ring_free += n;
         if (self.ring_quiet >= RING_QUIET_S * sr) {
             self.ringing = false;
-        } else if (!held and self.ring_pos - self.ring_from >= RING_MAX_S * sr) {
+        } else if (!held and self.ring_free >= RING_MAX_S * sr) {
             // Never quiet (a drone, a feedback loop): faded, and started
             // clean, so it doesn't come back with the next play.
             fadeOutInterleaved(out[0 .. n * audio.CHANNELS]);
@@ -1250,7 +1284,7 @@ pub const Engine = struct {
         // Held (or the arp still playing), it rings on; let go, until it
         // has been quiet RING_QUIET_S, or RING_MAX_S at most.
         const arp_busy = t.note_fx.present.load(.monotonic) != 0 and t.note_fx.busy();
-        const held = self.aud_held[0] | self.aud_held[1] != 0 or arp_busy;
+        const held = t.keys_held[0] | t.keys_held[1] != 0 or arp_busy;
         const sr: u64 = self.transport.sample_rate;
         const heard = out[0 .. n * audio.CHANNELS];
         if (held or peakInterleaved(heard) > RING_FLOOR) self.aud_quiet = 0 else self.aud_quiet += n;
@@ -1646,7 +1680,8 @@ pub const Engine = struct {
         const evs = scratch.events[lead..];
         var n_events = lead + self.injectHeld(ti, evs, gatherEvents(snap, beat_start, beat_end, spb, frames, chase, b.jumped, t.notes_on, evs));
         t.noteSounding(scratch.events[lead..n_events]);
-        const held_here = if (self.aud_track) |at| at == ti and self.aud_held[0] | self.aud_held[1] != 0 else false;
+        const held_keys = self.heldOn(ti);
+        const held_here = held_keys[0] | held_keys[1] != 0;
         // Frozen: its audio stands in for the instrument, audio clips and
         // inserts (docs/28 §Freeze); the fader on is as ever.
         const frozen = if (node.is_bus) null else snap.frozen;
@@ -6107,6 +6142,87 @@ test "stuck notes: stopped, a key let go as the editor moves to another track en
     for (out) |x| try testing.expectEqual(@as(f32, 0), x);
 }
 
+test "held keys on two tracks at once both sound, stopped or playing, and end" {
+    // Live MIDI by channel (docs/44 §Channels) holds keys on several
+    // tracks: a key on one doesn't let go of the other's.
+    const alloc = testing.allocator;
+    var va = Voices{};
+    var vb = Voices{};
+    var tracks = [_]Track{
+        try Track.init(alloc, "a", stuck_col, va.mach()),
+        try Track.init(alloc, "b", stuck_col, vb.mach()),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+    try testing.expect(eng.holdNote(0, 60, true));
+    try testing.expect(eng.holdNote(1, 64, true));
+    _ = renderFor(eng, 0.2);
+    try testing.expectEqual(@as(usize, 1), va.n);
+    try testing.expectEqual(@as(usize, 1), vb.n);
+    // Another key on track a leaves track b's alone.
+    try testing.expect(eng.holdNote(0, 67, true));
+    _ = renderFor(eng, 0.2);
+    try testing.expectEqual(@as(usize, 2), va.n);
+    try testing.expectEqual(@as(usize, 1), vb.n);
+    // Playing, they hold on through it.
+    transport.play();
+    _ = renderFor(eng, 0.2);
+    try testing.expectEqual(@as(usize, 2), va.n);
+    try testing.expectEqual(@as(usize, 1), vb.n);
+    transport.stop();
+    _ = renderFor(eng, 0.2);
+    try testing.expectEqual(@as(usize, 2), va.n);
+    try testing.expectEqual(@as(usize, 1), vb.n);
+    try testing.expect(eng.holdNote(0, 60, false));
+    try testing.expect(eng.holdNote(0, 67, false));
+    try testing.expect(eng.holdNote(1, 64, false));
+    const out = renderFor(eng, 3);
+    try testing.expectEqual(@as(usize, 0), va.n);
+    try testing.expectEqual(@as(usize, 0), vb.n);
+    for (out) |x| try testing.expectEqual(@as(f32, 0), x);
+}
+
+test "held keys: a release queued before the tracks renumber reaches its track" {
+    const alloc = testing.allocator;
+    var va = Voices{};
+    var vb = Voices{};
+    var tracks = [_]Track{
+        try Track.init(alloc, "a", stuck_col, va.mach()),
+        try Track.init(alloc, "b", stuck_col, vb.mach()),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+    try testing.expect(eng.holdNote(1, 64, true));
+    _ = renderFor(eng, 0.1);
+    try testing.expectEqual(@as(usize, 1), vb.n);
+    // Released, then the tracks swap places before the audio thread
+    // drains the release.
+    try testing.expect(eng.holdNote(1, 64, false));
+    std.mem.swap(Track, &tracks[0], &tracks[1]);
+    var map: [routing.MAX_TRACKS]u8 = @splat(routing.NONE);
+    map[0] = 1;
+    map[1] = 0;
+    eng.remapHeld(&map);
+    eng.publishRouting();
+    _ = renderFor(eng, 0.1);
+    try testing.expectEqual(@as(usize, 0), vb.n);
+    try testing.expectEqual(@as(u64, 0), tracks[0].keys_held[0] | tracks[0].keys_held[1]);
+}
+
 /// Instrument: from 1 at a note-on down to silence over `secs`, whatever
 /// the note-off (a long release, a reverb's tail).
 const SlowTail = struct {
@@ -6176,6 +6292,35 @@ test "audition: a tail rings until it falls quiet, and reaches a send's bus" {
         try testing.expect(!eng.ringing and !eng.aud_live);
         for (out) |x| try testing.expectEqual(@as(f32, 0), x);
     }
+}
+
+test "audition: keys held on two tracks past RING_MAX_S keep their release tail" {
+    // Live MIDI by channel holds keys on several tracks, which rings
+    // through the graph: the never-quiet limit counts from the release.
+    const alloc = testing.allocator;
+    var ta = Drone{};
+    var tb = Drone{};
+    var tracks = [_]Track{
+        try Track.init(alloc, "a", stuck_col, ta.mach()),
+        try Track.init(alloc, "b", stuck_col, tb.mach()),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    for (&tracks) |*t| t.setVolume(1.0);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = Transport{};
+    const eng = try alloc.create(Engine);
+    defer alloc.destroy(eng);
+    eng.* = .{ .transport = &transport, .tracks = &tracks };
+    eng.publishRouting();
+    try testing.expect(eng.holdNote(0, 60, true));
+    try testing.expect(eng.holdNote(1, 64, true));
+    _ = renderFor(eng, @floatFromInt(RING_MAX_S + 2));
+    try testing.expect(eng.holdNote(0, 60, false));
+    try testing.expect(eng.holdNote(1, 64, false));
+    const out = renderFor(eng, 1);
+    try testing.expect(out[0] > 0.05);
 }
 
 /// Instrument: sounds from a note-on until reset, note-offs or not.

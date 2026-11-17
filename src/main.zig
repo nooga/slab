@@ -255,32 +255,86 @@ const HeldNotes = struct { track: ?usize = null, set: u128 = 0 };
 /// `typed` are the computer keyboard's notes: they start at its velocity.
 /// `held` keeps what the engine took: a request its queue can't take this
 /// frame stays in the difference and goes next frame.
-fn holdNotes(engine: *engine_mod.Engine, held: *HeldNotes, track: ?usize, want_in: u128, typed: u128, typed_vel: u8) void {
+/// The track's live MIDI channel (`midi_live`, holdChannelNotes) may hold
+/// the same pitch: the engine keeps one key, so it starts with the first
+/// holder and ends with the last.
+fn holdNotes(engine: *engine_mod.Engine, tracks: []track_mod.Track, held: *HeldNotes, track: ?usize, want_in: u128, typed: u128, typed_vel: u8) void {
     const want = if (track == null) 0 else want_in | typed;
     if (held.track != track and held.set != 0) {
         // Another clip: let go of the old track's notes first.
         if (held.track) |ot| for (0..128) |pi| {
             const mask = @as(u128, 1) << @intCast(pi);
-            if (held.set & mask != 0 and engine.holdNote(ot, @intCast(pi), false)) held.set &= ~mask;
+            if (held.set & mask != 0 and sendKey(engine, ot, @intCast(pi), false, 0, coHeld(tracks, ot))) held.set &= ~mask;
         };
         if (held.set != 0) return;
     }
     held.track = track;
     const t = track orelse return;
+    const other = coHeld(tracks, t);
     const diff = held.set ^ want;
     if (diff == 0) return;
     // Releases first, so a glide from key to key doesn't overlap.
     for (0..128) |pi| {
         const mask = @as(u128, 1) << @intCast(pi);
-        if (diff & mask != 0 and want & mask == 0 and engine.holdNote(t, @intCast(pi), false)) held.set &= ~mask;
+        if (diff & mask != 0 and want & mask == 0 and sendKey(engine, t, @intCast(pi), false, 0, other)) held.set &= ~mask;
     }
     if (held.set & ~want != 0) return;
     for (0..128) |pi| {
         const mask = @as(u128, 1) << @intCast(pi);
         if (diff & mask == 0 or want & mask == 0) continue;
         const vel = if (typed & mask != 0) musical_keys.velocityOf(@intCast(pi), typed_vel) else 102;
-        if (engine.holdNoteVel(t, @intCast(pi), true, vel)) held.set |= mask;
+        if (sendKey(engine, t, @intCast(pi), true, vel, other)) held.set |= mask;
     }
+}
+
+/// What live MIDI on its channel holds on track `ti`.
+fn coHeld(tracks: []const track_mod.Track, ti: usize) u128 {
+    return if (ti < tracks.len) tracks[ti].midi_live else 0;
+}
+
+/// Start or end key `p` on track `ti`, unless `other` (the track's other
+/// holder) holds it: then the engine's key already sounds and stays.
+fn sendKey(engine: *engine_mod.Engine, ti: usize, p: u7, on: bool, vel: u8, other: u128) bool {
+    if (other & (@as(u128, 1) << p) != 0) return true;
+    return engine.holdNoteVel(ti, p, on, vel);
+}
+
+/// Tracks renumbered (`map` old → new, NONE for deleted), audio stopped:
+/// the editor's held keys and the engine's queued ones follow their
+/// track, so their release reaches it. A deleted track's keys went with it.
+fn remapHeldNotes(engine: *engine_mod.Engine, held: *HeldNotes, map: *const [routing_mod.MAX_TRACKS]u8) void {
+    engine.remapHeld(map);
+    const t = held.track orelse return;
+    if (t < routing_mod.MAX_TRACKS and map[t] != routing_mod.NONE) held.track = map[t] else held.* = .{};
+}
+
+/// Live MIDI on a channel plays every track set to it, whichever track is
+/// selected (docs/44 §Channels); the channels they claim stay out of
+/// `holdNotes`. As there, what the engine's queue can't take this frame
+/// goes next frame, and releases go first. `keys` are holdNotes' keys,
+/// the other holder of a pitch on their track.
+fn holdChannelNotes(engine: *engine_mod.Engine, tracks: []track_mod.Track, keys: *const HeldNotes) void {
+    var claimed: u16 = 0;
+    for (tracks, 0..) |*t, ti| {
+        const ch = if (t.kind == .audio) midiChannelOf(t) else null;
+        if (ch) |c_| claimed |= @as(u16, 1) << c_;
+        const want: u128 = if (ch) |c_| midi_in.soundingOn(c_) else 0;
+        const diff = t.midi_live ^ want;
+        if (diff == 0) continue;
+        const other = if (keys.track == ti) keys.set else 0;
+        for (0..128) |pi| {
+            const mask = @as(u128, 1) << @intCast(pi);
+            if (diff & mask != 0 and want & mask == 0 and sendKey(engine, ti, @intCast(pi), false, 0, other)) t.midi_live &= ~mask;
+        }
+        if (t.midi_live & ~want != 0) continue;
+        const c_ = ch orelse continue;
+        for (0..128) |pi| {
+            const mask = @as(u128, 1) << @intCast(pi);
+            if (diff & mask == 0 or want & mask == 0) continue;
+            if (sendKey(engine, ti, @intCast(pi), true, midi_in.vel[c_][pi], other)) t.midi_live |= mask;
+        }
+    }
+    midi_in.claimed = claimed;
 }
 
 test "holdNotes: what the engine's queue can't take goes next frame" {
@@ -300,22 +354,195 @@ test "holdNotes: what the engine's queue can't take goes next frame" {
     var held = HeldNotes{};
     // A hundred keys at once, more than the queue holds: the rest follow.
     const many: u128 = (@as(u128, 1) << 100) - 1;
-    holdNotes(engine, &held, 0, many, 0, 100);
+    holdNotes(engine, &tracks, &held, 0, many, 0, 100);
     try std.testing.expect(held.set != many);
     while (held.set != many) {
         engine_mod.Engine.renderCallback(engine, &out, 64);
-        holdNotes(engine, &held, 0, many, 0, 100);
+        holdNotes(engine, &tracks, &held, 0, many, 0, 100);
     }
     engine_mod.Engine.renderCallback(engine, &out, 64);
-    try std.testing.expectEqual(many, @as(u128, engine.aud_held[1]) << 64 | engine.aud_held[0]);
+    try std.testing.expectEqual(many, @as(u128, tracks[0].keys_held[1]) << 64 | tracks[0].keys_held[0]);
     // All let go: every release arrives, a lost one being a stuck note.
-    holdNotes(engine, &held, 0, 0, 0, 100);
+    holdNotes(engine, &tracks, &held, 0, 0, 0, 100);
     while (held.set != 0) {
         engine_mod.Engine.renderCallback(engine, &out, 64);
-        holdNotes(engine, &held, 0, 0, 0, 100);
+        holdNotes(engine, &tracks, &held, 0, 0, 0, 100);
     }
     engine_mod.Engine.renderCallback(engine, &out, 64);
-    try std.testing.expectEqual(@as(u64, 0), engine.aud_held[0] | engine.aud_held[1]);
+    try std.testing.expectEqual(@as(u64, 0), tracks[0].keys_held[0] | tracks[0].keys_held[1]);
+}
+
+test "holdChannelNotes: each channel plays the tracks set to it" {
+    const alloc = std.testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "pad", col, silent_machine),
+        try track_mod.Track.init(alloc, "drums", col, silent_machine),
+        try track_mod.Track.init(alloc, "keys", col, silent_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = transport_mod.Transport{};
+    const engine = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(engine);
+    engine.* = .{ .transport = &transport, .tracks = &tracks };
+    engine.publishRouting();
+    defer {
+        midi_in.allOff();
+        midi_in.claimed = 0;
+    }
+    tracks[0].midi_channel = 3;
+    tracks[1].midi_channel = 10;
+    const msg = struct {
+        fn f(st: u8, a: u8, b: u8) void {
+            midi_in.apply(midi_in.decode(@as(u32, st) << 16 | @as(u32, a) << 8 | b).?);
+        }
+    }.f;
+    msg(0x92, 60, 80); // channel 3
+    msg(0x99, 36, 120); // channel 10
+    msg(0x90, 72, 90); // channel 1: nobody's, the selected track's
+    var out: [64 * 2]f32 = undefined;
+    holdChannelNotes(engine, &tracks, &HeldNotes{});
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    const pbit = struct {
+        fn f(p: u7) u64 {
+            return @as(u64, 1) << @intCast(p % 64);
+        }
+    }.f;
+    try std.testing.expectEqual(@as(u16, 1 << 2 | 1 << 9), midi_in.claimed);
+    try std.testing.expectEqual(pbit(60), tracks[0].keys_held[0]);
+    try std.testing.expectEqual(pbit(36), tracks[1].keys_held[0]);
+    try std.testing.expectEqual(@as(u64, 0), tracks[2].keys_held[0] | tracks[2].keys_held[1]);
+    try std.testing.expectEqual(@as(u128, 1) << 72, midi_in.sounding());
+    // A track set back to "when selected" lets go of what it held.
+    tracks[0].midi_channel = 0;
+    holdChannelNotes(engine, &tracks, &HeldNotes{});
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expectEqual(@as(u64, 0), tracks[0].keys_held[0]);
+    try std.testing.expectEqual(@as(u16, 1 << 9), midi_in.claimed);
+    msg(0x89, 36, 0);
+    holdChannelNotes(engine, &tracks, &HeldNotes{});
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expectEqual(@as(u64, 0), tracks[1].keys_held[0]);
+    try std.testing.expectEqual(@as(u128, 0), tracks[1].midi_live);
+}
+
+test "holdChannelNotes: a track moved under held notes still lets go" {
+    const alloc = std.testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "pad", col, silent_machine),
+        try track_mod.Track.init(alloc, "drums", col, silent_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = transport_mod.Transport{};
+    const engine = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(engine);
+    engine.* = .{ .transport = &transport, .tracks = &tracks };
+    engine.publishRouting();
+    defer {
+        midi_in.allOff();
+        midi_in.claimed = 0;
+    }
+    tracks[0].midi_channel = 3;
+    tracks[1].midi_channel = 10;
+    midi_in.apply(midi_in.decode(0x92 << 16 | 60 << 8 | 80).?);
+    midi_in.apply(midi_in.decode(0x99 << 16 | 36 << 8 | 120).?);
+    var out: [64 * 2]f32 = undefined;
+    holdChannelNotes(engine, &tracks, &HeldNotes{});
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    // The pad is deleted: the drums move up to index 0, keys and all.
+    std.mem.swap(track_mod.Track, &tracks[0], &tracks[1]);
+    const left = tracks[0..1];
+    engine.tracks = left;
+    engine.publishRouting();
+    midi_in.apply(midi_in.decode(0x89 << 16 | 36 << 8 | 0).?);
+    holdChannelNotes(engine, left, &HeldNotes{});
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expectEqual(@as(u64, 0), left[0].keys_held[0] | left[0].keys_held[1]);
+    try std.testing.expectEqual(@as(u128, 0), left[0].midi_live);
+}
+
+test "holdNotes: a track deleted above the held one still lets go" {
+    const alloc = std.testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "a", col, silent_machine),
+        try track_mod.Track.init(alloc, "b", col, silent_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = transport_mod.Transport{};
+    const engine = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(engine);
+    engine.* = .{ .transport = &transport, .tracks = &tracks };
+    engine.publishRouting();
+    var held = HeldNotes{};
+    var out: [64 * 2]f32 = undefined;
+    holdNotes(engine, &tracks, &held, 1, @as(u128, 1) << 60, 0, 100);
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expect(tracks[1].keys_held[0] != 0);
+    // Track a is deleted: b moves up to index 0, keys and all.
+    std.mem.swap(track_mod.Track, &tracks[0], &tracks[1]);
+    const left = tracks[0..1];
+    engine.tracks = left;
+    engine.publishRouting();
+    var map: [routing_mod.MAX_TRACKS]u8 = @splat(routing_mod.NONE);
+    map[1] = 0;
+    remapHeldNotes(engine, &held, &map);
+    try std.testing.expectEqual(@as(?usize, 0), held.track);
+    holdNotes(engine, left, &held, 0, 0, 0, 100);
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expectEqual(@as(u64, 0), left[0].keys_held[0] | left[0].keys_held[1]);
+    try std.testing.expectEqual(@as(u128, 0), held.set);
+}
+
+test "holdNotes and holdChannelNotes share a pitch on one track" {
+    const alloc = std.testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tracks = [_]track_mod.Track{try track_mod.Track.init(alloc, "t", col, silent_machine)};
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    tracks[0].publishSnapshot(&pool);
+    var transport = transport_mod.Transport{};
+    const engine = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(engine);
+    engine.* = .{ .transport = &transport, .tracks = &tracks };
+    engine.publishRouting();
+    defer {
+        midi_in.allOff();
+        midi_in.claimed = 0;
+    }
+    // The selected track is on channel 3; C4 comes on channel 3 and from
+    // the keyboard both.
+    tracks[0].midi_channel = 3;
+    const c4: u128 = 1 << 60;
+    var held = HeldNotes{};
+    var out: [64 * 2]f32 = undefined;
+    midi_in.apply(midi_in.decode(0x92 << 16 | 60 << 8 | 80).?);
+    holdChannelNotes(engine, &tracks, &held);
+    holdNotes(engine, &tracks, &held, 0, 0, c4, 100);
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expectEqual(@as(u64, 1) << 60, tracks[0].keys_held[0]);
+    // The keyboard lets go: channel 3 still holds it.
+    holdChannelNotes(engine, &tracks, &held);
+    holdNotes(engine, &tracks, &held, 0, 0, 0, 100);
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expectEqual(@as(u64, 1) << 60, tracks[0].keys_held[0]);
+    // Channel 3 lets go: it ends.
+    midi_in.apply(midi_in.decode(0x82 << 16 | 60 << 8 | 0).?);
+    holdChannelNotes(engine, &tracks, &held);
+    holdNotes(engine, &tracks, &held, 0, 0, 0, 100);
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expectEqual(@as(u64, 0), tracks[0].keys_held[0]);
 }
 
 /// The song-wide state Insert and Delete time move (docs/31 §Time
@@ -1645,7 +1872,7 @@ pub fn main(init: std.process.Init) !void {
             if (recorder.isRecording()) {
                 status.set("Stop recording to move tracks", .{});
             } else {
-                moveTracks(alloc, &history, &audio, &engine, &tracks_buf, track_count, &transport, &mv, &selected_track, &selected_clip, &prev_selected_clip, &rename) catch |err| status.set("Move failed: {s}", .{@errorName(err)});
+                moveTracks(alloc, &history, &audio, &engine, &tracks_buf, track_count, &transport, &mv, &selected_track, &selected_clip, &prev_selected_clip, &rename, &held) catch |err| status.set("Move failed: {s}", .{@errorName(err)});
                 dirty = true;
             }
         }
@@ -1836,7 +2063,7 @@ pub fn main(init: std.process.Init) !void {
                 status.set("Stop recording before deleting a track", .{});
             } else if (edit.track < track_count) {
                 if (trackContents(tracks, edit.track, &delete_msg)) pending_delete = edit.track else {
-                    deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, edit.track, &selected_track, &selected_clip, &prev_selected_clip, &rename, true) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
+                    deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, edit.track, &selected_track, &selected_clip, &prev_selected_clip, &rename, &held, true) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
                     tracks = tracks_buf[0..track_count];
                     dirty = true;
                 }
@@ -1853,11 +2080,12 @@ pub fn main(init: std.process.Init) !void {
             layout.clip_editor_visible = true;
             rects = layout.compute(sw, sh);
         }
+        holdChannelNotes(&engine, tracks, &held);
         recordKeys(alloc, &history, tracks, &transport, meter_state.liveMap(), &selected_clip, &selected_track, &dirty);
         // The clip editor closed: only the computer keyboard holds notes,
         // on the selected track.
         const typed = musical_keys.sounding();
-        if (!layout.clipShown()) holdNotes(&engine, &held, playableTrack(tracks, selected_track), 0, typed, musical_keys.velocity);
+        if (!layout.clipShown()) holdNotes(&engine, tracks, &held, playableTrack(tracks, selected_track), 0, typed, musical_keys.velocity);
         if (layout.clipShown()) {
             const play_beat: ?f64 = if (transport.isPlaying()) transport.beats() else null;
             const cres = if (selectedClipIsAudio(tracks, selected_clip))
@@ -1874,7 +2102,7 @@ pub fn main(init: std.process.Init) !void {
                 selected_clip = f;
                 selected_track = f.track;
             }
-            holdNotes(&engine, &held, if (selected_clip) |s| s.track else playableTrack(tracks, selected_track), cres.hear, typed, musical_keys.velocity);
+            holdNotes(&engine, tracks, &held, if (selected_clip) |s| s.track else playableTrack(tracks, selected_track), cres.hear, typed, musical_keys.velocity);
             if (cres.command == .slice_to_sampler) {
                 sliceToSampler(alloc, &history, &status, &engine, &audio, &reg, &audio_pool, &tracks_buf, &track_count, &transport, &selected_track, &selected_clip, &dirty);
                 tracks = tracks_buf[0..track_count];
@@ -2399,7 +2627,7 @@ pub fn main(init: std.process.Init) !void {
                 while (k > 0) {
                     k -= 1;
                     if (!set[k]) continue;
-                    deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, k, &selected_track, &selected_clip, &prev_selected_clip, &rename, false) catch break;
+                    deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, k, &selected_track, &selected_clip, &prev_selected_clip, &rename, &held, false) catch break;
                     n += 1;
                 }
                 history.pushUndo(alloc, before) catch alloc.free(before);
@@ -2411,7 +2639,7 @@ pub fn main(init: std.process.Init) !void {
             const ti = pending_delete.?;
             pending_delete = null;
             if (yes) {
-                deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, ti, &selected_track, &selected_clip, &prev_selected_clip, &rename, true) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
+                deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, ti, &selected_track, &selected_clip, &prev_selected_clip, &rename, &held, true) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
                 dirty = true;
             }
         }
@@ -6355,13 +6583,16 @@ fn moveTracks(
     selected_clip: *?clip_mod.ClipRef,
     prev_selected_clip: *?clip_mod.ClipRef,
     rename: *RenameState,
+    held: *HeldNotes,
 ) !void {
     const before = try document_mod.serialize(alloc, tracks_buf[0..track_count], transport);
     errdefer alloc.free(before);
     const map = blk: {
         audio.stop();
         defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-        break :blk try applyMove(engine, tracks_buf, track_count, mv);
+        const m = try applyMove(engine, tracks_buf, track_count, mv);
+        remapHeldNotes(engine, held, &m);
+        break :blk m;
     };
     try history.pushUndo(alloc, before);
 
@@ -6499,6 +6730,7 @@ fn deleteTrack(
     selected_clip: *?clip_mod.ClipRef,
     prev_selected_clip: *?clip_mod.ClipRef,
     rename: *RenameState,
+    held: *HeldNotes,
     undo: bool,
 ) !void {
     if (ti >= track_count.*) return;
@@ -6515,6 +6747,11 @@ fn deleteTrack(
         while (i + 1 < track_count.*) : (i += 1) tracks_buf[i] = tracks_buf[i + 1];
         track_count.* -= 1;
         for (tracks_buf[0..track_count.*]) |*t| t.forgetTrack(@intCast(ti));
+        var map: [routing_mod.MAX_TRACKS]u8 = @splat(routing_mod.NONE);
+        for (0..track_count.* + 1) |k| {
+            if (k != ti) map[k] = @intCast(if (k > ti) k - 1 else k);
+        }
+        remapHeldNotes(engine, held, &map);
         engine.tracks = tracks_buf[0..track_count.*];
         engine.resetRamps();
         engine.publishRouting();
@@ -7813,6 +8050,8 @@ fn playableTrack(tracks: []track_mod.Track, sel: ?usize) ?usize {
 /// notes close into the open clip under the playhead on the played track,
 /// or a new clip from the bar the pass's first note fell in. The clip
 /// grows by bars to hold what's played; one undo step per pass.
+/// A track set to a MIDI channel records that channel in its own take
+/// alongside (docs/44 §Channels).
 fn recordKeys(
     alloc: std.mem.Allocator,
     history: *history_mod.History,
@@ -7823,17 +8062,88 @@ fn recordKeys(
     selected_track: *?usize,
     dirty: *bool,
 ) void {
-    const take = &musical_keys.take;
-    var out: [256]musical_keys.RecNote = undefined;
     const rolling = musical_keys.recording and transport.isPlaying();
+    const rec = KeysRec{ .alloc = alloc, .history = history, .tracks = tracks, .transport = transport, .meter = meter, .selected_clip = selected_clip, .selected_track = selected_track, .dirty = dirty, .rolling = rolling };
+    var any = musical_keys.take.active;
+    recordTake(rec, &musical_keys.take, musical_keys.sounding(), null);
+    // A track's take slot moves with it (`midi_take`), so deleting or
+    // moving tracks mid-pass keeps each take on its own track.
+    var owned: [routing_mod.MAX_TRACKS]bool = @splat(false);
+    for (tracks) |*t| if (t.midi_take) |s| {
+        owned[s] = true;
+    };
+    for (tracks, 0..) |*t, ti| {
+        const ch = if (t.kind == .audio) midiChannelOf(t) else null;
+        if (t.midi_take == null and ch != null and rolling) {
+            for (&owned, 0..) |*o, s| if (!o.*) {
+                o.* = true;
+                channel_takes[s] = .{};
+                t.midi_take = @intCast(s);
+                break;
+            };
+        }
+        const slot = t.midi_take orelse continue;
+        const take = &channel_takes[slot];
+        if (ch) |c_| {
+            take.channel = c_;
+            any = any or take.active;
+            recordTake(rec, take, midi_in.soundingOn(c_), ti);
+        } else if (take.active) {
+            // The track left its channel mid-pass: what it holds closes.
+            any = true;
+            var fin = rec;
+            fin.rolling = false;
+            recordTake(fin, take, 0, ti);
+        }
+        if (!rolling and !take.active) t.midi_take = null;
+    }
+    // A deleted track's take goes with it.
+    for (&channel_takes, owned) |*take, o| {
+        if (!o) take.* = .{};
+    }
+    // The transport stopped: the pass ends and REC lets go.
+    if (!rolling and any) musical_keys.recording = false;
+    if (!rolling) keys_pass_snapshot = false;
+}
+
+/// Takes for the tracks set to a MIDI channel; a track's `midi_take` is
+/// its slot.
+var channel_takes: [routing_mod.MAX_TRACKS]musical_keys.Take = @splat(.{});
+/// This pass already pushed its undo step (several takes share one).
+var keys_pass_snapshot = false;
+
+const KeysRec = struct {
+    alloc: std.mem.Allocator,
+    history: *history_mod.History,
+    tracks: []track_mod.Track,
+    transport: *transport_mod.Transport,
+    meter: meter_mod.MeterMap,
+    selected_clip: *?clip_mod.ClipRef,
+    selected_track: *?usize,
+    dirty: *bool,
+    rolling: bool,
+};
+
+/// The channel a track hears live MIDI on (docs/44 §Channels), or null for
+/// only while selected.
+fn midiChannelOf(t: *const track_mod.Track) ?u4 {
+    return if (t.midi_channel >= 1 and t.midi_channel <= 16) @intCast(t.midi_channel - 1) else null;
+}
+
+/// One take's frame: `sounding` is what it hears; `fixed` is the track a
+/// channel take writes (null: the played track, as the keys).
+fn recordTake(rec: KeysRec, take: *musical_keys.Take, sounding: u128, fixed: ?usize) void {
+    const alloc = rec.alloc;
+    const tracks = rec.tracks;
+    const meter = rec.meter;
+    const rolling = rec.rolling;
+    var out: [256]musical_keys.RecNote = undefined;
     var n: usize = 0;
     if (rolling) {
-        const beat = transport.beats();
-        if (!take.active) take.begin(musical_keys.sounding(), beat);
-        n = take.update(musical_keys.sounding(), musical_keys.velocity, beat, &out);
+        const beat = rec.transport.beats();
+        if (!take.active) take.begin(sounding, beat);
+        n = take.update(sounding, musical_keys.velocity, beat, &out);
     } else if (take.active) {
-        // The transport stopped: the pass ends and REC lets go.
-        musical_keys.recording = false;
         const target = take.target;
         n = take.finish(&out);
         take.target = target; // kept for the commit below, cleared after
@@ -7842,7 +8152,7 @@ fn recordKeys(
         if (!rolling) take.target = null;
         return;
     }
-    const ref = keysTarget(alloc, history, tracks, transport, meter, selected_clip, selected_track, if (n > 0) out[0].start else take.last_beat) orelse {
+    const ref = keysTarget(rec, take, fixed, if (n > 0) out[0].start else take.last_beat) orelse {
         if (!rolling) take.target = null;
         return;
     };
@@ -7865,46 +8175,54 @@ fn recordKeys(
     while ((end - clip.start_beat) * rate < reach - 1e-9 or end <= clip.start_beat) : (bar += 1) end += meter.barLenBeats(bar);
     const local_end = (end - clip.start_beat) * rate;
     if (local_end > clip.length_beats) clip.length_beats = local_end;
-    dirty.* = true;
+    rec.dirty.* = true;
     if (!rolling) take.target = null;
 }
 
 /// The clip a recording pass writes: the pass's own, the selected one on
-/// the played track with the playhead inside it, or a new one.
-fn keysTarget(
-    alloc: std.mem.Allocator,
-    history: *history_mod.History,
-    tracks: []track_mod.Track,
-    transport: *transport_mod.Transport,
-    meter: meter_mod.MeterMap,
-    selected_clip: *?clip_mod.ClipRef,
-    selected_track: *?usize,
-    beat: f64,
-) ?clip_mod.ClipRef {
-    const take = &musical_keys.take;
-    if (take.target) |tg| {
-        if (tg[0] < tracks.len and tg[1] < tracks[tg[0]].clips.items.len) return .{ .track = tg[0], .clip = tg[1] };
+/// the played track with the playhead inside it, or a new one. A channel
+/// take (`fixed`) writes the note clip under the playhead on its track,
+/// else a new one, and leaves the selection alone.
+fn keysTarget(rec: KeysRec, take: *musical_keys.Take, fixed: ?usize, beat: f64) ?clip_mod.ClipRef {
+    const tracks = rec.tracks;
+    const meter = rec.meter;
+    const selected_clip = rec.selected_clip;
+    if (take.target != null) {
+        // A channel take's track moved: its clips moved with it, at the
+        // same indices, so the pass stays in the clip it started.
+        if (fixed) |f| take.target.?[0] = @intCast(f);
+        const g = take.target.?;
+        if (g[0] < tracks.len and g[1] < tracks[g[0]].clips.items.len) return .{ .track = g[0], .clip = g[1] };
         take.target = null;
     }
-    const ti = (if (selected_clip.*) |s| @as(?usize, s.track) else null) orelse playableTrack(tracks, selected_track.*) orelse return null;
+    const ti = fixed orelse (if (selected_clip.*) |s| @as(?usize, s.track) else null) orelse playableTrack(tracks, rec.selected_track.*) orelse return null;
     if (ti >= tracks.len or tracks[ti].kind != .audio) return null;
-    pushHistorySnapshot(alloc, history, tracks, transport);
-    if (selected_clip.*) |s| if (s.track == ti and s.clip < tracks[ti].clips.items.len) {
+    if (!keys_pass_snapshot) pushHistorySnapshot(rec.alloc, rec.history, tracks, rec.transport);
+    keys_pass_snapshot = true;
+    if (fixed == null) if (selected_clip.*) |s| if (s.track == ti and s.clip < tracks[ti].clips.items.len) {
         const cl = &tracks[ti].clips.items[s.clip];
         if (cl.kind == .note and beat >= cl.start_beat and beat < cl.start_beat + cl.length_beats / tracks[ti].time.rate()) {
             take.target = .{ s.track, s.clip };
             return s;
         }
     };
+    if (fixed != null) for (tracks[ti].clips.items, 0..) |*cl, ci| {
+        if (cl.kind == .note and beat >= cl.start_beat and beat < cl.start_beat + cl.length_beats / tracks[ti].time.rate()) {
+            take.target = .{ @intCast(ti), @intCast(ci) };
+            return .{ .track = @intCast(ti), .clip = @intCast(ci) };
+        }
+    };
     const pos = meter.beatToBarPos(beat);
     const start = meter.barStartBeat(pos.bar);
     var buf: [clip_mod.MAX_NAME]u8 = undefined;
     const name = std.fmt.bufPrint(&buf, "Take {d}", .{tracks[ti].clips.items.len + 1}) catch "Take";
-    tracks[ti].addClip(alloc, clip_mod.Clip.init(name, start, meter.barLenBeats(pos.bar))) catch return null;
+    tracks[ti].addClip(rec.alloc, clip_mod.Clip.init(name, start, meter.barLenBeats(pos.bar))) catch return null;
     const ref = clip_mod.ClipRef{ .track = @intCast(ti), .clip = @intCast(tracks[ti].clips.items.len - 1) };
     take.target = .{ ref.track, ref.clip };
-    selected_clip.* = ref;
-    selected_track.* = ti;
+    if (fixed == null) {
+        selected_clip.* = ref;
+        rec.selected_track.* = ti;
+    }
     return ref;
 }
 

@@ -175,6 +175,20 @@ pub const Track = struct {
     /// What a take records from: an input channel or pair (docs/19
     /// `input`). Saved with the project; the default is input 1, mono.
     rec_input: recorder_mod.Input = .{},
+    /// The MIDI channel (1..16) this track plays and records whatever is
+    /// selected (docs/44 §Channels); 0 = only while selected, as before.
+    /// Saved as `midi`.
+    midi_channel: u8 = 0,
+    /// The pitches live MIDI on `midi_channel` holds in the engine now.
+    /// UI-owned, not saved.
+    midi_live: u128 = 0,
+    /// The recording pass's take for `midi_channel` (a slot of main's
+    /// channel takes). UI-owned, not saved; it moves with the track.
+    midi_take: ?u8 = null,
+    /// Audio thread: the keys the editors and live MIDI hold on this
+    /// track (engine `drainHeld`). Kept here so they move with the track
+    /// when tracks are deleted, moved or inserted.
+    keys_held: [2]u64 = .{ 0, 0 },
     /// Master only: the subsonic filter [engine.Subsonic] on the master's
     /// input. UI-owned, read by the audio thread; saved with the project.
     subsonic: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),

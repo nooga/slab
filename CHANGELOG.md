@@ -6,6 +6,14 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **MIDI channels play their own tracks.** Right-click a track's R and
+  set MIDI in to a channel: notes on that channel play the track whether
+  or not it is selected, and REC records them into its own clip. Several
+  channels play several tracks at once, so a multi-channel source (a
+  sequencer, a generator) plays a whole arrangement live. Channels no
+  track claims play the selected track, as before. The sustain pedal and
+  all-notes-off now act on their own channel only.
+
 ## 0.0.24 — 2026-11-16
 
 - **Rhodes E-Piano barks.** The pickup is refitted to a sampled 1977

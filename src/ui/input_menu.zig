@@ -1,7 +1,8 @@
 //! A track's record menu, from right-clicking its R: the input (one
 //! channel of the open input device, or a pair, recorded as a mono or
 //! stereo take; the track's `rec_input`, saved as `input`), and whether a
-//! take becomes notes (hum to notes, docs/30).
+//! take becomes notes (hum to notes, docs/30), and the MIDI channel it
+//! plays and records (`midi_channel`, docs/44 §Channels).
 
 const std = @import("std");
 const menu = @import("menu.zig");
@@ -17,10 +18,21 @@ pub var changed: bool = false;
 const KEY: u64 = 0x2007_E000_0000_0002;
 const PAIR: u32 = 0x100;
 const NOTES: u32 = 0x200;
-const MAX_ITEMS = 49;
+const MIDI_SUB: u32 = 0x300;
+const MIDI: u32 = 0x400;
+const MAX_ITEMS = 51;
 
 var track_idx: usize = 0;
 var labels: [MAX_ITEMS][24]u8 = undefined;
+var midi_label: [24]u8 = undefined;
+var sub_labels: [17][24]u8 = undefined;
+
+/// The menu row naming what the track hears: MIDI channel N, or only
+/// while selected (docs/44 §Channels).
+fn midiLabel(buf: []u8, ch: u8) []const u8 {
+    if (ch == 0) return "MIDI in: when selected";
+    return std.fmt.bufPrint(buf, "MIDI in: channel {d}", .{ch}) catch "MIDI in";
+}
 
 pub fn open(ti: usize, x: i32, y: i32) void {
     track_idx = ti;
@@ -53,7 +65,30 @@ pub fn tick(tracks: []Track) void {
     }
     items[k] = .{ .label = if (t.rec_notes) "\u{2022} Take becomes notes" else "  Take becomes notes", .id = NOTES };
     k += 1;
+    items[k] = .{ .separator = true };
+    k += 1;
+    items[k] = .{ .label = midiLabel(&midi_label, t.midi_channel), .id = MIDI_SUB, .submenu = true };
+    k += 1;
+    if (menu.subOpen(KEY, 0)) |sub| if (sub == MIDI_SUB) {
+        var sub_items: [17]menu.Item = undefined;
+        for (&sub_items, 0..) |*it, ch| {
+            const mark = if (t.midi_channel == ch) "\u{2022} " else "  ";
+            const text = if (ch == 0)
+                std.fmt.bufPrint(&sub_labels[ch], "{s}When selected", .{mark}) catch "?"
+            else
+                std.fmt.bufPrint(&sub_labels[ch], "{s}Channel {d}", .{ mark, ch }) catch "?";
+            it.* = .{ .label = text, .id = MIDI | @as(u32, @intCast(ch)) };
+        }
+        if (menu.subPick(KEY, 1, &sub_items)) |sid| {
+            const ch: u8 = @intCast(sid & 0x1f);
+            if (ch != t.midi_channel) {
+                t.midi_channel = ch;
+                changed = true;
+            }
+        }
+    };
     const id = menu.pick(KEY, items[0..k]) orelse return;
+    if (id == MIDI_SUB) return;
     if (id == NOTES) {
         t.rec_notes = !t.rec_notes;
         return;
@@ -78,5 +113,7 @@ pub fn tip(buf: []u8, t: *const Track) []const u8 {
     var lb: [8]u8 = undefined;
     const verb = if (t.isArmed()) "Disarm" else "Arm";
     const into = if (t.rec_notes) ", to notes" else "";
-    return std.fmt.bufPrint(buf, "{s}: input {s}{s} (right-click: input, notes)", .{ verb, t.rec_input.label(&lb), into }) catch "Record arm";
+    var mb: [12]u8 = undefined;
+    const midi = if (t.midi_channel == 0) "" else std.fmt.bufPrint(&mb, ", MIDI ch {d}", .{t.midi_channel}) catch "";
+    return std.fmt.bufPrint(buf, "{s}: input {s}{s}{s} (right-click: input, notes, MIDI)", .{ verb, t.rec_input.label(&lb), into, midi }) catch "Record arm";
 }
