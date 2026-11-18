@@ -504,6 +504,41 @@ test "holdNotes: a track deleted above the held one still lets go" {
     try std.testing.expectEqual(@as(u128, 0), held.set);
 }
 
+test "holdNotes: a track inserted above the held one still lets go" {
+    // Bounce, duplicate and group insert or reorder tracks too: every
+    // renumbering goes through tracksRenumbered.
+    const alloc = std.testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tracks_buf: [MAX_TRACKS]track_mod.Track = undefined;
+    var count: usize = 2;
+    tracks_buf[0] = try track_mod.Track.init(alloc, "a", col, silent_machine);
+    tracks_buf[1] = try track_mod.Track.init(alloc, "b", col, silent_machine);
+    defer for (tracks_buf[0..count]) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (tracks_buf[0..count]) |*t| t.publishSnapshot(&pool);
+    var transport = transport_mod.Transport{};
+    const engine = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(engine);
+    engine.* = .{ .transport = &transport, .tracks = tracks_buf[0..count] };
+    engine.publishRouting();
+    var held = HeldNotes{};
+    live_held = &held;
+    defer live_held = null;
+    var out: [64 * 2]f32 = undefined;
+    holdNotes(engine, tracks_buf[0..count], &held, 1, @as(u128, 1) << 60, 0, 100);
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    // A new track at the top: b moves to index 2, keys and all.
+    var fresh = try track_mod.Track.init(alloc, "new", col, silent_machine);
+    fresh.publishSnapshot(&pool);
+    insertTrackAt(engine, &tracks_buf, &count, 0, fresh);
+    try std.testing.expectEqual(@as(?usize, 2), held.track);
+    holdNotes(engine, tracks_buf[0..count], &held, 2, 0, 0, 100);
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expectEqual(@as(u64, 0), tracks_buf[2].keys_held[0] | tracks_buf[2].keys_held[1]);
+    try std.testing.expectEqual(@as(u128, 0), held.set);
+}
+
 test "holdNotes and holdChannelNotes share a pitch on one track" {
     const alloc = std.testing.allocator;
     const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
@@ -1236,6 +1271,8 @@ pub fn main(init: std.process.Init) !void {
     export_presets.load(alloc);
 
     var held: HeldNotes = .{};
+    live_held = &held;
+    defer live_held = null;
     var engine = engine_mod.Engine{
         .transport = &transport,
         .tracks = tracks_buf[0..track_count],
@@ -1872,7 +1909,7 @@ pub fn main(init: std.process.Init) !void {
             if (recorder.isRecording()) {
                 status.set("Stop recording to move tracks", .{});
             } else {
-                moveTracks(alloc, &history, &audio, &engine, &tracks_buf, track_count, &transport, &mv, &selected_track, &selected_clip, &prev_selected_clip, &rename, &held) catch |err| status.set("Move failed: {s}", .{@errorName(err)});
+                moveTracks(alloc, &history, &audio, &engine, &tracks_buf, track_count, &transport, &mv, &selected_track, &selected_clip, &prev_selected_clip, &rename) catch |err| status.set("Move failed: {s}", .{@errorName(err)});
                 dirty = true;
             }
         }
@@ -2063,7 +2100,7 @@ pub fn main(init: std.process.Init) !void {
                 status.set("Stop recording before deleting a track", .{});
             } else if (edit.track < track_count) {
                 if (trackContents(tracks, edit.track, &delete_msg)) pending_delete = edit.track else {
-                    deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, edit.track, &selected_track, &selected_clip, &prev_selected_clip, &rename, &held, true) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
+                    deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, edit.track, &selected_track, &selected_clip, &prev_selected_clip, &rename, true) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
                     tracks = tracks_buf[0..track_count];
                     dirty = true;
                 }
@@ -2627,7 +2664,7 @@ pub fn main(init: std.process.Init) !void {
                 while (k > 0) {
                     k -= 1;
                     if (!set[k]) continue;
-                    deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, k, &selected_track, &selected_clip, &prev_selected_clip, &rename, &held, false) catch break;
+                    deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, k, &selected_track, &selected_clip, &prev_selected_clip, &rename, false) catch break;
                     n += 1;
                 }
                 history.pushUndo(alloc, before) catch alloc.free(before);
@@ -2639,7 +2676,7 @@ pub fn main(init: std.process.Init) !void {
             const ti = pending_delete.?;
             pending_delete = null;
             if (yes) {
-                deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, ti, &selected_track, &selected_clip, &prev_selected_clip, &rename, &held, true) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
+                deleteTrack(alloc, &history, &status, &audio, &engine, &tracks_buf, &track_count, &transport, ti, &selected_track, &selected_clip, &prev_selected_clip, &rename, true) catch |err| status.set("Delete failed: {s}", .{@errorName(err)});
                 dirty = true;
             }
         }
@@ -5752,12 +5789,33 @@ fn thawBounce(alloc: std.mem.Allocator, history: *history_mod.History, status: *
 /// (the callback renders them in place); null in headless tools.
 var live_audio: ?*audio_mod.Audio = null;
 
+/// The keys main holds on a track by index (holdNotes); null in headless
+/// tools. Every edit that renumbers tracks goes through tracksRenumbered.
+var live_held: ?*HeldNotes = null;
+
+/// Tracks renumbered (`map` old → new, NONE for deleted), audio stopped:
+/// held keys follow their track. Every edit that moves tracks in
+/// `tracks_buf` calls this, or a release goes to the old index and the
+/// key sticks.
+fn tracksRenumbered(engine: *engine_mod.Engine, map: *const [routing_mod.MAX_TRACKS]u8) void {
+    if (live_held) |h| remapHeldNotes(engine, h, map) else engine.remapHeld(map);
+}
+
+/// The map for `count` tracks when one is inserted at `pos`.
+fn insertMap(count: usize, pos: usize) [routing_mod.MAX_TRACKS]u8 {
+    var map: [routing_mod.MAX_TRACKS]u8 = @splat(routing_mod.NONE);
+    for (0..count) |i| map[i] = @intCast(if (i >= pos) i + 1 else i);
+    return map;
+}
+
 /// Insert `t` at `pos`, the tracks from there moving up one; outputs,
 /// sends and keys follow. Stops the device while the tracks move.
 fn insertTrackAt(engine: *engine_mod.Engine, tracks_buf: *[MAX_TRACKS]track_mod.Track, track_count: *usize, pos: u8, t: track_mod.Track) void {
     const dev = if (live_audio) |a| (if (a.isRunning()) a else null) else null;
     if (dev) |a| a.stop();
     defer if (dev) |a| a.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+    const map = insertMap(track_count.*, pos);
+    tracksRenumbered(engine, &map);
     var i = track_count.*;
     while (i > pos) : (i -= 1) tracks_buf[i] = tracks_buf[i - 1];
     track_count.* += 1;
@@ -6545,6 +6603,8 @@ fn duplicateTrack(
     {
         audio.stop();
         defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+        const map = insertMap(track_count.*, pos);
+        tracksRenumbered(engine, &map);
         var i = track_count.*;
         while (i > pos) : (i -= 1) tracks_buf[i] = tracks_buf[i - 1];
         track_count.* += 1;
@@ -6583,16 +6643,13 @@ fn moveTracks(
     selected_clip: *?clip_mod.ClipRef,
     prev_selected_clip: *?clip_mod.ClipRef,
     rename: *RenameState,
-    held: *HeldNotes,
 ) !void {
     const before = try document_mod.serialize(alloc, tracks_buf[0..track_count], transport);
     errdefer alloc.free(before);
     const map = blk: {
         audio.stop();
         defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
-        const m = try applyMove(engine, tracks_buf, track_count, mv);
-        remapHeldNotes(engine, held, &m);
-        break :blk m;
+        break :blk try applyMove(engine, tracks_buf, track_count, mv);
     };
     try history.pushUndo(alloc, before);
 
@@ -6634,6 +6691,7 @@ fn applyMove(engine: *engine_mod.Engine, tracks_buf: *[MAX_TRACKS]track_mod.Trac
             }
         }
         for (tracks_buf[0..track_count]) |*t| t.remapTracks(&map);
+        tracksRenumbered(engine, &map);
         engine.tracks = tracks_buf[0..track_count];
         engine.resetRamps();
         engine.clearPdc();
@@ -6730,7 +6788,6 @@ fn deleteTrack(
     selected_clip: *?clip_mod.ClipRef,
     prev_selected_clip: *?clip_mod.ClipRef,
     rename: *RenameState,
-    held: *HeldNotes,
     undo: bool,
 ) !void {
     if (ti >= track_count.*) return;
@@ -6751,7 +6808,7 @@ fn deleteTrack(
         for (0..track_count.* + 1) |k| {
             if (k != ti) map[k] = @intCast(if (k > ti) k - 1 else k);
         }
-        remapHeldNotes(engine, held, &map);
+        tracksRenumbered(engine, &map);
         engine.tracks = tracks_buf[0..track_count.*];
         engine.resetRamps();
         engine.publishRouting();
