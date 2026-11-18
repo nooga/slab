@@ -119,6 +119,8 @@ var log_all = false;
 var names: [MAX_SOURCES][NAME_MAX]u8 = undefined;
 var name_len: [MAX_SOURCES]u8 = @splat(0);
 var count: usize = 0;
+/// Sources present at the last rescan, uncapped.
+var sources: usize = 0;
 /// Set when the set of sources changed; `takeChanged` clears it.
 var changed = false;
 
@@ -155,13 +157,22 @@ pub fn takeChanged() bool {
 
 fn rescan() void {
     const n: usize = @intCast(@max(slab_midi_connect(), 0));
+    sourcesNow(n);
     count = @min(n, MAX_SOURCES);
     for (0..count) |i| {
         const ok = slab_midi_source_name(@intCast(i), &names[i], NAME_MAX);
         name_len[i] = if (ok != 0) @intCast(std.mem.indexOfScalar(u8, &names[i], 0) orelse NAME_MAX) else 0;
     }
-    if (count == 0) allOff();
     changed = true;
+}
+
+/// How many sources are present now. One gone (unplugged, or a program
+/// quitting its virtual source) can't send the note-offs for what it
+/// held, and the live state doesn't say which source held what, so all
+/// of it lets go: a stuck note costs more than a key cut short.
+fn sourcesNow(n: usize) void {
+    if (n < sources) allOff();
+    sources = n;
 }
 
 /// Once a frame: follow device changes, then drain what arrived into the
@@ -246,5 +257,18 @@ test "all notes off clears everything" {
     reset();
     apply(decode(pack(0, 0x90, 60, 90)).?);
     apply(decode(pack(0, 0xB0, 123, 0)).?);
+    try std.testing.expectEqual(@as(u128, 0), sounding());
+}
+
+test "a source going away lets go of what was held" {
+    reset();
+    defer sourcesNow(0);
+    sourcesNow(2);
+    apply(decode(pack(0, 0x90, 60, 80)).?);
+    // Another source comes: nothing lets go.
+    sourcesNow(3);
+    try std.testing.expectEqual(bit(60), sounding());
+    // One goes while others remain: its notes can't be told apart, all end.
+    sourcesNow(2);
     try std.testing.expectEqual(@as(u128, 0), sounding());
 }

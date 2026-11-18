@@ -10,7 +10,10 @@ state), `src/midi_map.zig` (bindings, learn, the factory map),
 ## Input
 
 Slab opens every MIDI source at start and follows devices as they come and
-go (the status line says `MIDI in: <device>`). CoreMIDI's callback frames
+go (the status line says `MIDI in: <device>`). When a source goes away
+(unplugged, or a program quitting its virtual source), every held note
+lets go: it can't send their note-offs, and the live state doesn't record
+which source held which note. CoreMIDI's callback frames
 the bytes and queues them in a lock-free ring; the UI thread drains it once
 a frame, the way it reads the computer keyboard. Nothing on the audio
 thread is involved, and nothing allocates.
