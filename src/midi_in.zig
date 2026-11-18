@@ -55,46 +55,79 @@ pub fn decode(raw: u32) ?Msg {
 
 // ── Live state ───────────────────────────────────────────────────────
 
-/// Notes the fingers hold now, and those the sustain pedal still holds.
-pub var held: u128 = 0;
-pub var sustained: u128 = 0;
-/// Velocity each held note arrived with (1..127).
-pub var vel: [128]u8 = @splat(100);
-pub var sustain_down = false;
+// Held notes, the pedal and all-notes-off are per channel, as MIDI has
+// them, so a track set to a channel (docs/44 §Channels) plays that
+// channel's notes alone; the unclaimed channels play the selected track.
+
+/// Notes the fingers hold now on each channel, and those its sustain
+/// pedal still holds.
+pub var held: [16]u128 = @splat(0);
+pub var sustained: [16]u128 = @splat(0);
+/// Velocity each held note arrived with (1..127), per channel.
+pub var vel: [16][128]u8 = @splat(@splat(100));
+pub var sustain_down: [16]bool = @splat(false);
 /// Pitch bend, -1...1; the last value of each controller.
 pub var bend: f32 = 0;
 pub var cc: [128]u8 = @splat(0);
+/// Channels some track listens to (bit n = channel n+1); main sets it
+/// each frame. Their notes stay out of `sounding`.
+pub var claimed: u16 = 0;
 
 fn bit(p: u8) u128 {
     return @as(u128, 1) << @intCast(p);
 }
 
-/// The pitches sounding now: held, plus those the pedal holds.
+fn isClaimed(ch: usize) bool {
+    return claimed & (@as(u16, 1) << @intCast(ch)) != 0;
+}
+
+/// The pitches sounding now on `ch`: held, plus those its pedal holds.
+pub fn soundingOn(ch: u4) u128 {
+    return held[ch] | sustained[ch];
+}
+
+/// The pitches sounding now on the channels no track claims (these play
+/// the selected track).
 pub fn sounding() u128 {
-    return held | sustained;
+    var set: u128 = 0;
+    for (0..16) |ch| if (!isClaimed(ch)) {
+        set |= soundingOn(@intCast(ch));
+    };
+    return set;
+}
+
+/// The velocity pitch `p` arrived with on an unclaimed channel (the
+/// loudest, when several hold it); null when none holds it.
+pub fn velocityOf(p: u8) ?u8 {
+    var v: ?u8 = null;
+    for (0..16) |ch| if (!isClaimed(ch) and soundingOn(@intCast(ch)) & bit(p) != 0) {
+        v = @max(v orelse 0, vel[ch][p]);
+    };
+    return v;
 }
 
 /// Fold `m` into the live state.
 pub fn apply(m: Msg) void {
+    const ch = m.channel;
     switch (m.kind) {
         .note_on => {
-            held |= bit(m.a);
-            sustained &= ~bit(m.a);
-            vel[m.a] = @max(m.b, 1);
+            held[ch] |= bit(m.a);
+            sustained[ch] &= ~bit(m.a);
+            vel[ch][m.a] = @max(m.b, 1);
         },
         .note_off => {
-            held &= ~bit(m.a);
-            if (sustain_down) sustained |= bit(m.a);
+            held[ch] &= ~bit(m.a);
+            if (sustain_down[ch]) sustained[ch] |= bit(m.a);
         },
         .bend => bend = m.bendValue(),
         .cc => {
             cc[m.a] = m.b;
             switch (m.a) {
                 64 => {
-                    sustain_down = m.b >= 64;
-                    if (!sustain_down) sustained = 0;
+                    sustain_down[ch] = m.b >= 64;
+                    if (!sustain_down[ch]) sustained[ch] = 0;
                 },
-                120, 123 => allOff(),
+                120, 123 => channelOff(ch),
                 else => {},
             }
         },
@@ -102,11 +135,15 @@ pub fn apply(m: Msg) void {
     }
 }
 
-/// Let go of everything (all notes off, a device unplugged).
+fn channelOff(ch: u4) void {
+    held[ch] = 0;
+    sustained[ch] = 0;
+    sustain_down[ch] = false;
+}
+
+/// Let go of everything (a device unplugged).
 pub fn allOff() void {
-    held = 0;
-    sustained = 0;
-    sustain_down = false;
+    for (0..16) |ch| channelOff(@intCast(ch));
 }
 
 // ── Devices ──────────────────────────────────────────────────────────
@@ -194,6 +231,7 @@ fn pack(src: u8, st: u8, a: u8, b: u8) u32 {
 
 fn reset() void {
     allOff();
+    claimed = 0;
     bend = 0;
     cc = @splat(0);
 }
@@ -223,7 +261,7 @@ test "notes hold and release, velocity is kept" {
     apply(decode(pack(0, 0x90, 60, 80)).?);
     apply(decode(pack(0, 0x90, 64, 120)).?);
     try std.testing.expectEqual(bit(60) | bit(64), sounding());
-    try std.testing.expectEqual(@as(u8, 120), vel[64]);
+    try std.testing.expectEqual(@as(u8, 120), vel[0][64]);
     apply(decode(pack(0, 0x80, 60, 0)).?);
     try std.testing.expectEqual(bit(64), sounding());
 }
@@ -247,4 +285,34 @@ test "all notes off clears everything" {
     apply(decode(pack(0, 0x90, 60, 90)).?);
     apply(decode(pack(0, 0xB0, 123, 0)).?);
     try std.testing.expectEqual(@as(u128, 0), sounding());
+}
+
+test "all notes off and the pedal act on their own channel" {
+    reset();
+    defer reset();
+    apply(decode(pack(0, 0x90, 60, 90)).?);
+    apply(decode(pack(0, 0x92, 62, 90)).?);
+    apply(decode(pack(0, 0xB2, 123, 0)).?);
+    try std.testing.expectEqual(bit(60), sounding());
+    // A pedal on channel 3 doesn't hold channel 1's note.
+    apply(decode(pack(0, 0xB2, 64, 127)).?);
+    apply(decode(pack(0, 0x80, 60, 0)).?);
+    try std.testing.expectEqual(@as(u128, 0), sounding());
+}
+
+test "claimed channels stay out of the selected track's notes" {
+    reset();
+    // Other modules' tests read this state.
+    defer reset();
+    apply(decode(pack(0, 0x90, 60, 90)).?);
+    apply(decode(pack(0, 0x93, 64, 70)).?);
+    apply(decode(pack(0, 0x99, 36, 110)).?);
+    try std.testing.expectEqual(bit(60) | bit(64) | bit(36), sounding());
+    claimed = 1 << 3 | 1 << 9;
+    try std.testing.expectEqual(bit(60), sounding());
+    try std.testing.expectEqual(bit(64), soundingOn(3));
+    try std.testing.expectEqual(bit(36), soundingOn(9));
+    try std.testing.expectEqual(@as(u8, 70), vel[3][64]);
+    try std.testing.expectEqual(@as(?u8, null), velocityOf(64));
+    try std.testing.expectEqual(@as(?u8, 90), velocityOf(60));
 }
