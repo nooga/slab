@@ -12,6 +12,7 @@ extern fn slab_midi_start() c_int;
 extern fn slab_midi_connect() c_int;
 extern fn slab_midi_take_rescan() c_int;
 extern fn slab_midi_source_name(i: c_int, buf: [*]u8, cap: c_int) c_int;
+extern fn slab_midi_source_id(i: c_int) i32;
 extern fn slab_midi_pop() u32;
 extern fn slab_midi_take_dropped() c_uint;
 
@@ -119,8 +120,11 @@ var log_all = false;
 var names: [MAX_SOURCES][NAME_MAX]u8 = undefined;
 var name_len: [MAX_SOURCES]u8 = @splat(0);
 var count: usize = 0;
-/// Sources present at the last rescan, uncapped.
-var sources: usize = 0;
+/// The unique IDs of the sources present at the last rescan (CoreMIDI's
+/// kMIDIPropertyUniqueID), uncapped by MAX_SOURCES up to MAX_IDS.
+const MAX_IDS = 64;
+var ids: [MAX_IDS]i32 = undefined;
+var id_count: usize = 0;
 /// Set when the set of sources changed; `takeChanged` clears it.
 var changed = false;
 
@@ -157,7 +161,10 @@ pub fn takeChanged() bool {
 
 fn rescan() void {
     const n: usize = @intCast(@max(slab_midi_connect(), 0));
-    sourcesNow(n);
+    var now: [MAX_IDS]i32 = undefined;
+    const seen = @min(n, MAX_IDS);
+    for (0..seen) |i| now[i] = slab_midi_source_id(@intCast(i));
+    sourcesNow(now[0..seen]);
     count = @min(n, MAX_SOURCES);
     for (0..count) |i| {
         const ok = slab_midi_source_name(@intCast(i), &names[i], NAME_MAX);
@@ -166,24 +173,51 @@ fn rescan() void {
     changed = true;
 }
 
-/// How many sources are present now. One gone (unplugged, or a program
-/// quitting its virtual source) can't send the note-offs for what it
-/// held, and the live state doesn't say which source held what, so all
-/// of it lets go: a stuck note costs more than a key cut short.
-fn sourcesNow(n: usize) void {
-    if (n < sources) allOff();
-    sources = n;
+/// The sources present now, by unique ID. One gone (unplugged, or a
+/// program quitting its virtual source) can't send the note-offs for what
+/// it held, and the live state doesn't say which source held what, so all
+/// of it lets go: a stuck note costs more than a key cut short. By ID, not
+/// count: a source replaced between two rescans (a program restarting its
+/// virtual source) leaves the count the same.
+fn sourcesNow(now: []const i32) void {
+    for (ids[0..id_count]) |old| {
+        if (std.mem.indexOfScalar(i32, now, old) == null) {
+            allOff();
+            break;
+        }
+    }
+    id_count = @min(now.len, MAX_IDS);
+    @memcpy(ids[0..id_count], now[0..id_count]);
 }
 
-/// Once a frame: follow device changes, then drain what arrived into the
-/// live state. The messages (up to `out.len`) are copied to `out` for the
-/// layers above (learn, mappings); returns how many.
+/// Once a frame: drain what arrived into the live state, then follow
+/// device changes. The messages (up to `out.len`) are copied to `out` for
+/// the layers above (learn, mappings); returns how many.
 pub fn poll(out: []Msg) usize {
     if (!started) return 0;
-    if (slab_midi_take_rescan() != 0) rescan();
+    return pollFrom(Native, out);
+}
+
+const Native = struct {
+    fn pop() u32 {
+        return slab_midi_pop();
+    }
+    fn takeRescan() bool {
+        return slab_midi_take_rescan() != 0;
+    }
+    fn rescanNow() void {
+        rescan();
+    }
+};
+
+/// `poll` over `io` (pop, takeRescan, rescanNow): tests drive it with a
+/// queue of their own. The queue drains before the rescan, so a note-on a
+/// departing source sent just before it went is released with the rest.
+fn pollFrom(comptime io: type, out: []Msg) usize {
+    const rescan_due = io.takeRescan();
     var n: usize = 0;
     while (true) {
-        const raw = slab_midi_pop();
+        const raw = io.pop();
         if (raw == 0) break;
         const m = decode(raw) orelse continue;
         if (claim == null or !claim.?(m)) apply(m);
@@ -194,6 +228,7 @@ pub fn poll(out: []Msg) usize {
         }
     }
     if (slab_midi_take_dropped() != 0) std.log.warn("midi: input ring overflowed", .{});
+    if (rescan_due) io.rescanNow();
     return n;
 }
 
@@ -262,13 +297,54 @@ test "all notes off clears everything" {
 
 test "a source going away lets go of what was held" {
     reset();
-    defer sourcesNow(0);
-    sourcesNow(2);
+    defer sourcesNow(&.{});
+    sourcesNow(&.{ 10, 20 });
     apply(decode(pack(0, 0x90, 60, 80)).?);
     // Another source comes: nothing lets go.
-    sourcesNow(3);
+    sourcesNow(&.{ 10, 20, 30 });
     try std.testing.expectEqual(bit(60), sounding());
     // One goes while others remain: its notes can't be told apart, all end.
-    sourcesNow(2);
+    sourcesNow(&.{ 10, 30 });
+    try std.testing.expectEqual(@as(u128, 0), sounding());
+}
+
+test "a source replaced between rescans still lets go" {
+    // A program restarting its virtual source: one gone, one new, the
+    // count the same.
+    reset();
+    defer sourcesNow(&.{});
+    sourcesNow(&.{ 10, 20 });
+    apply(decode(pack(1, 0x90, 64, 80)).?);
+    sourcesNow(&.{ 10, 21 });
+    try std.testing.expectEqual(@as(u128, 0), sounding());
+}
+
+test "poll: a note-on queued before its source went is released" {
+    reset();
+    defer sourcesNow(&.{});
+    sourcesNow(&.{ 10, 20 });
+    const Fake = struct {
+        var queue: [2]u32 = undefined;
+        var at: usize = 0;
+        var gone = false;
+        fn pop() u32 {
+            if (at >= queue.len) return 0;
+            at += 1;
+            return queue[at - 1];
+        }
+        fn takeRescan() bool {
+            return true;
+        }
+        fn rescanNow() void {
+            gone = true;
+            sourcesNow(&.{10});
+        }
+    };
+    // Source 20 sent a note-on just before it went; the rescan notice
+    // and the message are both pending when the frame polls.
+    Fake.queue = .{ pack(1, 0x90, 62, 90), 0 };
+    var out: [4]Msg = undefined;
+    _ = pollFrom(Fake, &out);
+    try std.testing.expect(Fake.gone);
     try std.testing.expectEqual(@as(u128, 0), sounding());
 }

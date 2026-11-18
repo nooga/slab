@@ -133,6 +133,15 @@ int slab_midi_source_name(int i, char *buf, int cap) {
     return ok ? 1 : 0;
 }
 
+// Source `i`'s CoreMIDI unique ID (kMIDIPropertyUniqueID), which stays the
+// same while the endpoint exists; 0 when there is none.
+int32_t slab_midi_source_id(int i) {
+    if (i < 0 || (ItemCount)i >= MIDIGetNumberOfSources()) return 0;
+    SInt32 id = 0;
+    if (MIDIObjectGetIntegerProperty(MIDIGetSource((ItemCount)i), kMIDIPropertyUniqueID, &id) != noErr) return 0;
+    return id;
+}
+
 // The next queued message, or 0 when the ring is empty. A message always
 // has a status byte, so 0 is never one.
 uint32_t slab_midi_pop(void) {
