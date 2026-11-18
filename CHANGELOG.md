@@ -6,6 +6,10 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **No stuck notes when a MIDI source goes away.** Unplugging a device,
+  or quitting a program that sends MIDI, lets go of the notes it held,
+  even with other devices still connected.
+
 ## 0.0.24 — 2026-11-16
 
 - **Rhodes E-Piano barks.** The pickup is refitted to a sampled 1977
