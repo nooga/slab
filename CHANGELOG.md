@@ -6,6 +6,13 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **No stuck keys when tracks move.** A key held while a track is moved,
+  deleted, grouped, duplicated or inserted (a bounce) above it now lets go
+  when released, instead of sounding until panic.
+- **Long-held keys keep their tail.** Stopped, a key held past 30 s on a
+  track that feeds a bus or send now rings out after release instead of
+  being cut.
+
 ## 0.0.24 — 2026-11-16
 
 - **Rhodes E-Piano barks.** The pickup is refitted to a sampled 1977

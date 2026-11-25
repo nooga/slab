@@ -283,6 +283,15 @@ fn holdNotes(engine: *engine_mod.Engine, held: *HeldNotes, track: ?usize, want_i
     }
 }
 
+/// Tracks renumbered (`map` old → new, NONE for deleted), audio stopped:
+/// the editor's held keys and the engine's queued ones follow their
+/// track, so their release reaches it. A deleted track's keys went with it.
+fn remapHeldNotes(engine: *engine_mod.Engine, held: *HeldNotes, map: *const [routing_mod.MAX_TRACKS]u8) void {
+    engine.remapHeld(map);
+    const t = held.track orelse return;
+    if (t < routing_mod.MAX_TRACKS and map[t] != routing_mod.NONE) held.track = map[t] else held.* = .{};
+}
+
 test "holdNotes: what the engine's queue can't take goes next frame" {
     const alloc = std.testing.allocator;
     const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
@@ -307,7 +316,7 @@ test "holdNotes: what the engine's queue can't take goes next frame" {
         holdNotes(engine, &held, 0, many, 0, 100);
     }
     engine_mod.Engine.renderCallback(engine, &out, 64);
-    try std.testing.expectEqual(many, @as(u128, engine.aud_held[1]) << 64 | engine.aud_held[0]);
+    try std.testing.expectEqual(many, @as(u128, tracks[0].keys_held[1]) << 64 | tracks[0].keys_held[0]);
     // All let go: every release arrives, a lost one being a stuck note.
     holdNotes(engine, &held, 0, 0, 0, 100);
     while (held.set != 0) {
@@ -315,7 +324,78 @@ test "holdNotes: what the engine's queue can't take goes next frame" {
         holdNotes(engine, &held, 0, 0, 0, 100);
     }
     engine_mod.Engine.renderCallback(engine, &out, 64);
-    try std.testing.expectEqual(@as(u64, 0), engine.aud_held[0] | engine.aud_held[1]);
+    try std.testing.expectEqual(@as(u64, 0), tracks[0].keys_held[0] | tracks[0].keys_held[1]);
+}
+
+test "holdNotes: a track deleted above the held one still lets go" {
+    const alloc = std.testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tracks = [_]track_mod.Track{
+        try track_mod.Track.init(alloc, "a", col, silent_machine),
+        try track_mod.Track.init(alloc, "b", col, silent_machine),
+    };
+    defer for (&tracks) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (&tracks) |*t| t.publishSnapshot(&pool);
+    var transport = transport_mod.Transport{};
+    const engine = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(engine);
+    engine.* = .{ .transport = &transport, .tracks = &tracks };
+    engine.publishRouting();
+    var held = HeldNotes{};
+    var out: [64 * 2]f32 = undefined;
+    holdNotes(engine, &held, 1, @as(u128, 1) << 60, 0, 100);
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expect(tracks[1].keys_held[0] != 0);
+    // Track a is deleted: b moves up to index 0, keys and all.
+    std.mem.swap(track_mod.Track, &tracks[0], &tracks[1]);
+    const left = tracks[0..1];
+    engine.tracks = left;
+    engine.publishRouting();
+    var map: [routing_mod.MAX_TRACKS]u8 = @splat(routing_mod.NONE);
+    map[1] = 0;
+    remapHeldNotes(engine, &held, &map);
+    try std.testing.expectEqual(@as(?usize, 0), held.track);
+    holdNotes(engine, &held, 0, 0, 0, 100);
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expectEqual(@as(u64, 0), left[0].keys_held[0] | left[0].keys_held[1]);
+    try std.testing.expectEqual(@as(u128, 0), held.set);
+}
+
+test "holdNotes: a track inserted above the held one still lets go" {
+    // Bounce, duplicate and group insert or reorder tracks too: every
+    // renumbering goes through tracksRenumbered.
+    const alloc = std.testing.allocator;
+    const col = @import("c.zig").rl.Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    var tracks_buf: [MAX_TRACKS]track_mod.Track = undefined;
+    var count: usize = 2;
+    tracks_buf[0] = try track_mod.Track.init(alloc, "a", col, silent_machine);
+    tracks_buf[1] = try track_mod.Track.init(alloc, "b", col, silent_machine);
+    defer for (tracks_buf[0..count]) |*t| t.deinit(alloc);
+    var pool = @import("audio_pool.zig").AudioPool.init(alloc);
+    defer pool.deinit();
+    for (tracks_buf[0..count]) |*t| t.publishSnapshot(&pool);
+    var transport = transport_mod.Transport{};
+    const engine = try alloc.create(engine_mod.Engine);
+    defer alloc.destroy(engine);
+    engine.* = .{ .transport = &transport, .tracks = tracks_buf[0..count] };
+    engine.publishRouting();
+    var held = HeldNotes{};
+    live_held = &held;
+    defer live_held = null;
+    var out: [64 * 2]f32 = undefined;
+    holdNotes(engine, &held, 1, @as(u128, 1) << 60, 0, 100);
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    // A new track at the top: b moves to index 2, keys and all.
+    var fresh = try track_mod.Track.init(alloc, "new", col, silent_machine);
+    fresh.publishSnapshot(&pool);
+    insertTrackAt(engine, &tracks_buf, &count, 0, fresh);
+    try std.testing.expectEqual(@as(?usize, 2), held.track);
+    holdNotes(engine, &held, 2, 0, 0, 100);
+    engine_mod.Engine.renderCallback(engine, &out, 64);
+    try std.testing.expectEqual(@as(u64, 0), tracks_buf[2].keys_held[0] | tracks_buf[2].keys_held[1]);
+    try std.testing.expectEqual(@as(u128, 0), held.set);
 }
 
 /// The song-wide state Insert and Delete time move (docs/31 §Time
@@ -1009,6 +1089,8 @@ pub fn main(init: std.process.Init) !void {
     export_presets.load(alloc);
 
     var held: HeldNotes = .{};
+    live_held = &held;
+    defer live_held = null;
     var engine = engine_mod.Engine{
         .transport = &transport,
         .tracks = tracks_buf[0..track_count],
@@ -5524,12 +5606,33 @@ fn thawBounce(alloc: std.mem.Allocator, history: *history_mod.History, status: *
 /// (the callback renders them in place); null in headless tools.
 var live_audio: ?*audio_mod.Audio = null;
 
+/// The keys main holds on a track by index (holdNotes); null in headless
+/// tools. Every edit that renumbers tracks goes through tracksRenumbered.
+var live_held: ?*HeldNotes = null;
+
+/// Tracks renumbered (`map` old → new, NONE for deleted), audio stopped:
+/// held keys follow their track. Every edit that moves tracks in
+/// `tracks_buf` calls this, or a release goes to the old index and the
+/// key sticks.
+fn tracksRenumbered(engine: *engine_mod.Engine, map: *const [routing_mod.MAX_TRACKS]u8) void {
+    if (live_held) |h| remapHeldNotes(engine, h, map) else engine.remapHeld(map);
+}
+
+/// The map for `count` tracks when one is inserted at `pos`.
+fn insertMap(count: usize, pos: usize) [routing_mod.MAX_TRACKS]u8 {
+    var map: [routing_mod.MAX_TRACKS]u8 = @splat(routing_mod.NONE);
+    for (0..count) |i| map[i] = @intCast(if (i >= pos) i + 1 else i);
+    return map;
+}
+
 /// Insert `t` at `pos`, the tracks from there moving up one; outputs,
 /// sends and keys follow. Stops the device while the tracks move.
 fn insertTrackAt(engine: *engine_mod.Engine, tracks_buf: *[MAX_TRACKS]track_mod.Track, track_count: *usize, pos: u8, t: track_mod.Track) void {
     const dev = if (live_audio) |a| (if (a.isRunning()) a else null) else null;
     if (dev) |a| a.stop();
     defer if (dev) |a| a.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+    const map = insertMap(track_count.*, pos);
+    tracksRenumbered(engine, &map);
     var i = track_count.*;
     while (i > pos) : (i -= 1) tracks_buf[i] = tracks_buf[i - 1];
     track_count.* += 1;
@@ -6317,6 +6420,8 @@ fn duplicateTrack(
     {
         audio.stop();
         defer audio.start() catch |err| std.log.err("audio restart failed: {s}", .{@errorName(err)});
+        const map = insertMap(track_count.*, pos);
+        tracksRenumbered(engine, &map);
         var i = track_count.*;
         while (i > pos) : (i -= 1) tracks_buf[i] = tracks_buf[i - 1];
         track_count.* += 1;
@@ -6403,6 +6508,7 @@ fn applyMove(engine: *engine_mod.Engine, tracks_buf: *[MAX_TRACKS]track_mod.Trac
             }
         }
         for (tracks_buf[0..track_count]) |*t| t.remapTracks(&map);
+        tracksRenumbered(engine, &map);
         engine.tracks = tracks_buf[0..track_count];
         engine.resetRamps();
         engine.clearPdc();
@@ -6515,6 +6621,11 @@ fn deleteTrack(
         while (i + 1 < track_count.*) : (i += 1) tracks_buf[i] = tracks_buf[i + 1];
         track_count.* -= 1;
         for (tracks_buf[0..track_count.*]) |*t| t.forgetTrack(@intCast(ti));
+        var map: [routing_mod.MAX_TRACKS]u8 = @splat(routing_mod.NONE);
+        for (0..track_count.* + 1) |k| {
+            if (k != ti) map[k] = @intCast(if (k > ti) k - 1 else k);
+        }
+        tracksRenumbered(engine, &map);
         engine.tracks = tracks_buf[0..track_count.*];
         engine.resetRamps();
         engine.publishRouting();

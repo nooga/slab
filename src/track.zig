@@ -175,6 +175,10 @@ pub const Track = struct {
     /// What a take records from: an input channel or pair (docs/19
     /// `input`). Saved with the project; the default is input 1, mono.
     rec_input: recorder_mod.Input = .{},
+    /// Audio thread: the keys the editors and live input hold on this
+    /// track (engine `drainHeld`). Kept here so they move with the track
+    /// when tracks are deleted, moved or inserted.
+    keys_held: [2]u64 = .{ 0, 0 },
     /// Master only: the subsonic filter [engine.Subsonic] on the master's
     /// input. UI-owned, read by the audio thread; saved with the project.
     subsonic: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
