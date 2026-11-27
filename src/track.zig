@@ -175,6 +175,17 @@ pub const Track = struct {
     /// What a take records from: an input channel or pair (docs/19
     /// `input`). Saved with the project; the default is input 1, mono.
     rec_input: recorder_mod.Input = .{},
+    /// The MIDI source (by its device name) this track plays and records
+    /// whatever is selected (docs/44 §Sources); empty = only while
+    /// selected, as before. Saved as `midi_in`.
+    midi_source_buf: [48]u8 = undefined,
+    midi_source_len: u8 = 0,
+    /// The pitches live MIDI from `midi_source` holds in the engine now.
+    /// UI-owned, not saved.
+    midi_live: u128 = 0,
+    /// The recording pass's take for `midi_source` (a slot of main's
+    /// source takes). UI-owned, not saved; it moves with the track.
+    midi_take: ?u8 = null,
     /// Audio thread: the keys the editors and live input hold on this
     /// track (engine `drainHeld`). Kept here so they move with the track
     /// when tracks are deleted, moved or inserted.
@@ -434,6 +445,19 @@ pub const Track = struct {
 
     pub fn isBus(self: *const Track) bool {
         return self.kind == .bus;
+    }
+
+    /// The MIDI source this track listens to, or "" for only while selected.
+    pub fn midiSource(self: *const Track) []const u8 {
+        return self.midi_source_buf[0..self.midi_source_len];
+    }
+
+    /// Listen to the source named `src` ("" for only while selected); a
+    /// longer name is cut to the buffer, as CoreMIDI's are.
+    pub fn setMidiSource(self: *Track, src: []const u8) void {
+        const n = @min(src.len, self.midi_source_buf.len);
+        @memcpy(self.midi_source_buf[0..n], src[0..n]);
+        self.midi_source_len = @intCast(n);
     }
 
     pub fn sendSlots(self: *Track) []Send {

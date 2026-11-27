@@ -197,7 +197,7 @@ pub fn inputLive() bool {
 /// The velocity pitch `p` sounds at: a MIDI note's own, else `fallback`
 /// (the KEYS velocity).
 pub fn velocityOf(p: u8, fallback: u8) u8 {
-    return if (midi_in.sounding() & (@as(u128, 1) << @intCast(p)) != 0) midi_in.vel[p] else fallback;
+    return midi_in.velocityOf(p) orelse fallback;
 }
 
 pub fn setEnabled(on: bool) void {
@@ -272,6 +272,10 @@ pub const RecNote = struct { pitch: u8, start: f64, end: f64, velocity: u8 };
 /// opens it again at its start.
 pub const Take = struct {
     active: bool = false,
+    /// A track set to a MIDI source records that source alone, at its
+    /// velocities (docs/44 §Sources): its index. Null is the keys' and
+    /// the unclaimed sources' take.
+    source: ?usize = null,
     /// The clip the pass writes (main's ClipRef: track, clip).
     target: ?[2]u32 = null,
     prev: u128 = 0,
@@ -282,7 +286,7 @@ pub const Take = struct {
 
     /// Keys already down when the pass starts aren't recorded.
     pub fn begin(self: *Take, held_now: u128, beat: f64) void {
-        self.* = .{ .active = true, .prev = held_now, .last_beat = beat };
+        self.* = .{ .active = true, .source = self.source, .prev = held_now, .last_beat = beat };
     }
 
     /// The notes that closed this frame go to `out` (room for 256).
@@ -303,7 +307,7 @@ pub const Take = struct {
     /// The pass ends: whatever's open closes where it stopped.
     pub fn finish(self: *Take, out: []RecNote) usize {
         const n = self.closeSet(self.open, self.last_beat, out);
-        self.* = .{};
+        self.* = .{ .source = self.source };
         return n;
     }
 
@@ -311,7 +315,7 @@ pub const Take = struct {
         if (set == 0) return;
         for (0..128) |p| if (set & (@as(u128, 1) << @intCast(p)) != 0) {
             self.open_start[p] = beat;
-            self.open_vel[p] = velocityOf(@intCast(p), vel);
+            self.open_vel[p] = if (self.source) |src| midi_in.velFrom(src, @intCast(p)) orelse vel else velocityOf(@intCast(p), vel);
         };
         self.open |= set;
     }

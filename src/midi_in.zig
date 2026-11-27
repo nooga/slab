@@ -55,46 +55,103 @@ pub fn decode(raw: u32) ?Msg {
 
 // ── Live state ───────────────────────────────────────────────────────
 
-/// Notes the fingers hold now, and those the sustain pedal still holds.
-pub var held: u128 = 0;
-pub var sustained: u128 = 0;
-/// Velocity each held note arrived with (1..127).
-pub var vel: [128]u8 = @splat(100);
-pub var sustain_down = false;
+// Held notes, the pedal and all-notes-off are per source and channel, as
+// MIDI has them. A track listening to a source (docs/44 §Sources) plays
+// that source's notes alone; the sources no track listens to play the
+// selected track.
+
+const Slot = struct {
+    /// Notes the fingers hold now, and those the sustain pedal still holds.
+    held: u128 = 0,
+    sustained: u128 = 0,
+    pedal: bool = false,
+    /// Velocity each held note arrived with (1..127).
+    vel: [128]u8 = @splat(100),
+};
+
+/// By source index (as `sourceName` lists them), then channel.
+var slots: [MAX_SOURCES][16]Slot = @splat(@splat(.{}));
 /// Pitch bend, -1...1; the last value of each controller.
 pub var bend: f32 = 0;
 pub var cc: [128]u8 = @splat(0);
+/// Sources some track listens to (bit n = source n); main sets it each
+/// frame. Their notes stay out of `sounding`.
+pub var claimed: u16 = 0;
 
 fn bit(p: u8) u128 {
     return @as(u128, 1) << @intCast(p);
 }
 
-/// The pitches sounding now: held, plus those the pedal holds.
+/// The state slot of messages from source `src`. Sources past
+/// MAX_SOURCES share the last one.
+fn slotsOf(src: usize) *[16]Slot {
+    return &slots[@min(src, MAX_SOURCES - 1)];
+}
+
+fn isClaimed(src: usize) bool {
+    return src < MAX_SOURCES and claimed & (@as(u16, 1) << @intCast(src)) != 0;
+}
+
+/// The pitches sounding now from source `src`, on any channel: held, plus
+/// those its pedals hold.
+pub fn soundingFrom(src: usize) u128 {
+    var set: u128 = 0;
+    for (slotsOf(src)) |*c| set |= c.held | c.sustained;
+    return set;
+}
+
+/// The velocity pitch `p` arrived with from source `src` (the loudest, when
+/// several channels hold it); null when none holds it.
+pub fn velFrom(src: usize, p: u8) ?u8 {
+    var v: ?u8 = null;
+    for (slotsOf(src)) |*c| if ((c.held | c.sustained) & bit(p) != 0) {
+        v = @max(v orelse 0, c.vel[p]);
+    };
+    return v;
+}
+
+/// The pitches sounding now from the sources no track listens to (these
+/// play the selected track).
 pub fn sounding() u128 {
-    return held | sustained;
+    var set: u128 = 0;
+    for (0..MAX_SOURCES) |src| if (!isClaimed(src)) {
+        set |= soundingFrom(src);
+    };
+    return set;
+}
+
+/// The velocity pitch `p` arrived with from an unclaimed source (the
+/// loudest, when several hold it); null when none holds it.
+pub fn velocityOf(p: u8) ?u8 {
+    var v: ?u8 = null;
+    for (0..MAX_SOURCES) |src| if (!isClaimed(src)) {
+        if (velFrom(src, p)) |x| v = @max(v orelse 0, x);
+    };
+    return v;
 }
 
 /// Fold `m` into the live state.
 pub fn apply(m: Msg) void {
+    const c = &slotsOf(m.src)[m.channel];
     switch (m.kind) {
         .note_on => {
-            held |= bit(m.a);
-            sustained &= ~bit(m.a);
-            vel[m.a] = @max(m.b, 1);
+            c.held |= bit(m.a);
+            c.sustained &= ~bit(m.a);
+            c.vel[m.a] = @max(m.b, 1);
         },
         .note_off => {
-            held &= ~bit(m.a);
-            if (sustain_down) sustained |= bit(m.a);
+            c.held &= ~bit(m.a);
+            if (c.pedal) c.sustained |= bit(m.a);
         },
         .bend => bend = m.bendValue(),
         .cc => {
             cc[m.a] = m.b;
             switch (m.a) {
                 64 => {
-                    sustain_down = m.b >= 64;
-                    if (!sustain_down) sustained = 0;
+                    c.pedal = m.b >= 64;
+                    if (!c.pedal) c.sustained = 0;
                 },
-                120, 123 => allOff(),
+                120, 123 => c.* = .{},
                 else => {},
             }
         },
@@ -102,17 +159,17 @@ pub fn apply(m: Msg) void {
     }
 }
 
-/// Let go of everything (all notes off, a device unplugged).
+/// Let go of everything.
 pub fn allOff() void {
-    held = 0;
-    sustained = 0;
-    sustain_down = false;
+    slots = @splat(@splat(.{}));
 }
 
 // ── Devices ──────────────────────────────────────────────────────────
 
-pub const MAX_SOURCES = 8;
-const NAME_MAX = 48;
+/// Sources Slab names and keeps apart (a split generator publishes one per
+/// part); more are still played, sharing the last one's state.
+pub const MAX_SOURCES = 16;
+pub const NAME_MAX = 48;
 var started = false;
 /// SLAB_MIDI_LOG=1 prints every message (to learn what a device sends).
 var log_all = false;
@@ -138,6 +195,24 @@ pub fn sourceName(i: usize) []const u8 {
     return if (i < count) names[i][0..name_len[i]] else "";
 }
 
+/// The index of the source named `name` now, or null when none is
+/// connected (a saved project's device, unplugged).
+pub fn sourceIndex(name: []const u8) ?usize {
+    if (name.len == 0) return null;
+    for (0..count) |i| if (std.mem.eql(u8, sourceName(i), name)) return i;
+    return null;
+}
+
+/// Tests: the sources present, as a rescan would leave them.
+pub fn setSourcesForTest(list: []const []const u8) void {
+    count = @min(list.len, MAX_SOURCES);
+    for (list[0..count], 0..) |n, i| {
+        const len = @min(n.len, NAME_MAX);
+        @memcpy(names[i][0..len], n[0..len]);
+        name_len[i] = @intCast(len);
+    }
+}
+
 /// Set by the mapping layer: true for a message it consumes (a pad bound
 /// to an action, anything while LEARN listens), which then never plays.
 pub var claim: ?*const fn (Msg) bool = null;
@@ -153,23 +228,48 @@ pub fn takeChanged() bool {
     return changed;
 }
 
+var prev_names: [MAX_SOURCES][NAME_MAX]u8 = undefined;
+var prev_len: [MAX_SOURCES]u8 = @splat(0);
+var prev_slots: [MAX_SOURCES][16]Slot = undefined;
+
 fn rescan() void {
+    prev_names = names;
+    prev_len = name_len;
+    const prev_count = count;
     const n: usize = @intCast(@max(slab_midi_connect(), 0));
     count = @min(n, MAX_SOURCES);
     for (0..count) |i| {
         const ok = slab_midi_source_name(@intCast(i), &names[i], NAME_MAX);
         name_len[i] = if (ok != 0) @intCast(std.mem.indexOfScalar(u8, &names[i], 0) orelse NAME_MAX) else 0;
     }
-    if (count == 0) allOff();
+    followSources(prev_count);
     changed = true;
 }
 
-/// Once a frame: follow device changes, then drain what arrived into the
-/// live state. The messages (up to `out.len`) are copied to `out` for the
-/// layers above (learn, mappings); returns how many.
+/// After a rescan, each source's live state follows it to its new index,
+/// matched by name. A source gone can't send the note-offs for what it
+/// held, so its notes let go; the others' play on.
+fn followSources(prev_count: usize) void {
+    prev_slots = slots;
+    slots = @splat(@splat(.{}));
+    var used: [MAX_SOURCES]bool = @splat(false);
+    for (0..count) |i| {
+        for (0..prev_count) |j| {
+            if (used[j] or !std.mem.eql(u8, prev_names[j][0..prev_len[j]], sourceName(i))) continue;
+            slots[i] = prev_slots[j];
+            used[j] = true;
+            break;
+        }
+    }
+}
+
+/// Once a frame: drain what arrived into the live state, then follow
+/// device changes. The messages (up to `out.len`) are copied to `out` for
+/// the layers above (learn, mappings); returns how many. Draining first
+/// keeps each queued message with the source index it was sent under.
 pub fn poll(out: []Msg) usize {
     if (!started) return 0;
-    if (slab_midi_take_rescan() != 0) rescan();
+    const rescan_due = slab_midi_take_rescan() != 0;
     var n: usize = 0;
     while (true) {
         const raw = slab_midi_pop();
@@ -183,6 +283,7 @@ pub fn poll(out: []Msg) usize {
         }
     }
     if (slab_midi_take_dropped() != 0) std.log.warn("midi: input ring overflowed", .{});
+    if (rescan_due) rescan();
     return n;
 }
 
@@ -194,6 +295,8 @@ fn pack(src: u8, st: u8, a: u8, b: u8) u32 {
 
 fn reset() void {
     allOff();
+    claimed = 0;
+    count = 0;
     bend = 0;
     cc = @splat(0);
 }
@@ -223,7 +326,7 @@ test "notes hold and release, velocity is kept" {
     apply(decode(pack(0, 0x90, 60, 80)).?);
     apply(decode(pack(0, 0x90, 64, 120)).?);
     try std.testing.expectEqual(bit(60) | bit(64), sounding());
-    try std.testing.expectEqual(@as(u8, 120), vel[64]);
+    try std.testing.expectEqual(@as(?u8, 120), velFrom(0, 64));
     apply(decode(pack(0, 0x80, 60, 0)).?);
     try std.testing.expectEqual(bit(64), sounding());
 }
@@ -247,4 +350,58 @@ test "all notes off clears everything" {
     apply(decode(pack(0, 0x90, 60, 90)).?);
     apply(decode(pack(0, 0xB0, 123, 0)).?);
     try std.testing.expectEqual(@as(u128, 0), sounding());
+}
+
+test "all notes off and the pedal act on their own channel" {
+    reset();
+    defer reset();
+    apply(decode(pack(0, 0x90, 60, 90)).?);
+    apply(decode(pack(0, 0x92, 62, 90)).?);
+    apply(decode(pack(0, 0xB2, 123, 0)).?);
+    try std.testing.expectEqual(bit(60), sounding());
+    // A pedal on channel 3 doesn't hold channel 1's note.
+    apply(decode(pack(0, 0xB2, 64, 127)).?);
+    apply(decode(pack(0, 0x80, 60, 0)).?);
+    try std.testing.expectEqual(@as(u128, 0), sounding());
+}
+
+test "claimed sources stay out of the selected track's notes" {
+    reset();
+    // Other modules' tests read this state.
+    defer reset();
+    apply(decode(pack(0, 0x90, 60, 90)).?);
+    apply(decode(pack(1, 0x93, 64, 70)).?);
+    apply(decode(pack(2, 0x99, 36, 110)).?);
+    try std.testing.expectEqual(bit(60) | bit(64) | bit(36), sounding());
+    claimed = 1 << 1 | 1 << 2;
+    try std.testing.expectEqual(bit(60), sounding());
+    try std.testing.expectEqual(bit(64), soundingFrom(1));
+    try std.testing.expectEqual(bit(36), soundingFrom(2));
+    try std.testing.expectEqual(@as(?u8, 70), velFrom(1, 64));
+    try std.testing.expectEqual(@as(?u8, null), velocityOf(64));
+    try std.testing.expectEqual(@as(?u8, 90), velocityOf(60));
+}
+
+test "a source keeps its notes across a rescan that moves it, and a gone one lets go" {
+    reset();
+    defer reset();
+    setSourcesForTest(&.{ "keys", "undertone lead", "undertone drums" });
+    apply(decode(pack(1, 0x93, 64, 70)).?);
+    apply(decode(pack(2, 0x99, 36, 110)).?);
+    // The keyboard is unplugged: the lead and drums move down one.
+    prev_names = names;
+    prev_len = name_len;
+    setSourcesForTest(&.{ "undertone lead", "undertone drums" });
+    followSources(3);
+    try std.testing.expectEqual(bit(64), soundingFrom(0));
+    try std.testing.expectEqual(bit(36), soundingFrom(1));
+    try std.testing.expectEqual(@as(?usize, 1), sourceIndex("undertone drums"));
+    // The drums go too: only theirs let go.
+    prev_names = names;
+    prev_len = name_len;
+    setSourcesForTest(&.{"undertone lead"});
+    followSources(2);
+    try std.testing.expectEqual(bit(64), soundingFrom(0));
+    try std.testing.expectEqual(@as(u128, 0), soundingFrom(1));
+    try std.testing.expectEqual(@as(?usize, null), sourceIndex("undertone drums"));
 }
