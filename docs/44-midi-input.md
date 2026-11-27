@@ -18,9 +18,33 @@ thread is involved, and nothing allocates.
 Played notes join what KEYS holds (docs/40) and go to the same track: the
 clip open in the piano roll, else the selected track. They keep their own
 velocity. Notes work with KEYS off. The sustain pedal (CC 64) holds
-released notes; all-notes-off (CC 123) and all-sound-off (CC 120) release
-everything. Pitch bend and the other controllers are tracked and available
-to mappings; no machine reads bend yet.
+released notes on its channel; all-notes-off (CC 123) and all-sound-off
+(CC 120) release its channel's notes. Pitch bend and the other
+controllers are tracked and available to mappings; no machine reads bend
+yet.
+
+## Sources
+
+A track can listen to one MIDI source: right-click its R, then
+**MIDI in** and pick a connected device by name. Notes from that source,
+on any channel, play the track whether or not it is selected, and every
+track set to the source plays them. Sources no track claims go to the
+selected track as above, so the default, **When selected**, changes
+nothing. The setting is saved with the project by the device's name
+(docs/19 `midi_in`), and the R button's tooltip names it.
+
+A source that isn't connected keeps its tracks set to it: the menu lists
+it as not connected, and they play again when it's plugged back in.
+When a source goes away, the notes it held let go; other sources' notes
+play on.
+
+This lets a program that publishes one source per part play several
+tracks at once: `undertone -midi-live -midi-split` publishes
+`undertone drone`, `undertone lead`, `undertone drums` and so on, one
+track each.
+
+Stopped, several tracks holding notes ring out through the whole graph
+(the engine's audition path, as when a track feeds a bus).
 
 Timing is frame-quantized: a note lands in the block after the frame that
 saw it.
@@ -30,6 +54,11 @@ saw it.
 REC records what a connected device plays, with or without KEYS on, as it
 does for KEYS (docs/40 §Recording): one pass, notes closing into the clip
 under the playhead or a new one, one undo step per pass.
+
+A track set to a source records that source into its own clip in the
+same pass: the note clip under the playhead on that track, else a new
+one. The selection stays where it was, and the pass is still one undo
+step.
 
 ## Mappings
 

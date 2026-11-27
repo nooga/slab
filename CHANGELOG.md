@@ -6,6 +6,22 @@ GitHub are its section here (`tools/release.sh` copies them), so add to
 
 ## Unreleased
 
+- **MIDI sources play their own tracks.** Right-click a track's R and set
+  MIDI in to a connected device: its notes play the track whether or not
+  it is selected, and REC records them into its own clip. Several sources
+  play several tracks at once, so a program that publishes a source per
+  part (undertone's `-midi-split`) plays a whole arrangement live.
+  Sources no track listens to play the selected track, as before. When a
+  device goes away only its notes let go, and the sustain pedal and
+  all-notes-off now act on their own channel.
+
+- **No stuck keys when tracks move.** A key held while a track is moved,
+  deleted, grouped, duplicated or inserted (a bounce) above it now lets go
+  when released, instead of sounding until panic.
+- **Long-held keys keep their tail.** Stopped, a key held past 30 s on a
+  track that feeds a bus or send now rings out after release instead of
+  being cut.
+
 ## 0.0.24 — 2026-11-16
 
 - **Rhodes E-Piano barks.** The pickup is refitted to a sampled 1977
